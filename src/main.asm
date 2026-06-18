@@ -3,10 +3,12 @@ org 0x7C00
 
 ; Setup SECTOR --------------------------------------------
 cli
+cld
 
 xor ax, ax      ; AX = 0
 mov ds, ax      ; for memory DS:offset
 mov ss, ax      ; for stack base/segment SS:SP
+mov si, ax      ; reseting si for memory na lo  instructions
 mov sp, 0x7C00  ; for stack offset/pointer
 
 sti
@@ -20,6 +22,19 @@ msgh db "Halted-", 0
 msgcl db "EoC. Current length: ", 0
 
 section .text
+
+read_char:
+
+    mov ah, 0x00
+    int 0x16
+
+    ret
+
+print_char:
+    mov ah, 0x0E
+    int 0x10
+
+    ret
 
 print_str:
     mov ah, 0x0E
@@ -37,20 +52,6 @@ print_str:
 
     .done:
         ret
-
-print_nl:
-
-    mov ah, 0x0E
-    mov al, 0x0D                        ; CR
-    int 0x10 
-    mov al, 0x0A                        ; LF
-    int 0x10
-    mov al, 0x0D                        ; CR
-    int 0x10 
-    mov al, 0x0A                        ; LF
-    int 0x10
-
-    ret
 
 print_num:
 
@@ -89,22 +90,73 @@ print_num:
         pop bx
         ret
 
+mov_nextline:
+    mov ah, 0x0E
+    mov al, 0x0D                        ; CR
+    int 0x10 
+    mov al, 0x0A                        ; LF
+    int 0x10
+
+    ret
+
+
+
+
+_shell:
+    mov al, '>'
+    call print_char
+    
+    jmp .read_loop
+
+
+    .read_loop:
+        call read_char
+
+        cmp al, 0x0D
+        je .enter
+
+        cmp al, 0x1B
+        je .exit
+
+        call print_char
+        jmp .read_loop
+
+    .enter:
+        call mov_nextline
+        jmp _shell
+
+    .exit:
+        call mov_nextline
+        ret
+
+
+
+; ENTRY POINT ------------------------------------------------------------------ 
+
 main:
     mov bx, msgb
     call print_str
-    call print_nl
+    call mov_nextline
+    call mov_nextline
+
+    
+    call _shell
+
+
+
+    
+
 
     jmp halt
-    ;jmp main
 
 halt:
 
 
     mov bx, msgh
     call print_str
-    call print_nl
+    call mov_nextline
+    call mov_nextline
 
-    dw 0xFF
 
 
 
@@ -120,17 +172,13 @@ halt:
 
     mov bx, msgcl
     call print_str
-    ;call print_nl
 
     mov ax, (p_end - $$)
-    ;mov ax, 145
     call print_num
 
     jmp .end
 
-    .end:
-        
-        
+    .end:        
         hlt
         jmp .end
 
