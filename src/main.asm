@@ -12,10 +12,9 @@ mov si, ax      ; reseting si for memory na lo  instructions
 mov sp, 0x7C00  ; for stack offset/pointer
 
 sti
-
 jmp main
 
-; Data SECTOR ---------------------------------------------
+; Data SECTOR ----------------------------------------------
 
 msgb db "Booted!", 0
 msgh db "Halted-", 0
@@ -128,8 +127,6 @@ _shell:
     .exit:
         call mov_nextline
         ret
-
-
 
 ; ENTRY POINT ------------------------------------------------------------------ 
 
