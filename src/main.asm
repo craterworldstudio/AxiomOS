@@ -9,6 +9,8 @@ xor ax, ax      ; AX = 0
 mov ds, ax      ; for memory DS:offset
 mov ss, ax      ; for stack base/segment SS:SP
 mov si, ax      ; reseting si for memory na lo  instructions
+mov es, ax      ; for memory ES:DI
+mov di, ax      ; for memory ES:DI
 mov sp, 0x7C00  ; for stack offset/pointer
 
 sti
@@ -20,6 +22,12 @@ msgb db "Booted!", 0
 msgh db "Halted-", 0
 msgcl db "EoC. Current length: ", 0
 
+comhelp db "help",0
+comhelpout db "Helped ya there fam!", 0
+
+
+txt_buff times 64 db 0
+
 section .text
 
 read_char:
@@ -29,6 +37,29 @@ read_char:
 
     ret
 
+read_line:    
+    .read_loop:
+        call read_char
+        cmp al, 0x0D
+        je .enter
+
+        cmp al, 0x1B
+        je .exit
+
+        call print_char
+        stosb
+        jmp .read_loop
+
+
+    .enter:
+        call mov_nextline
+        mov al, 0
+        stosb   
+        ret
+
+    .exit:
+        ret
+
 print_char:
     mov ah, 0x0E
     int 0x10
@@ -37,17 +68,18 @@ print_char:
 
 print_str:
     mov ah, 0x0E
-    mov si, 0
+    
     .loop:
-        mov al, [bx+si]
+        lodsb
+
         cmp al, 0
         je .done
         
         int 0x10
 
-        add si, 1
-
         jmp .loop
+
+    
 
     .done:
         ret
@@ -101,29 +133,45 @@ mov_nextline:
 
 
 
+
+_help:
+    mov si, comhelpout
+    call print_str
+    call mov_nextline
+
+    jmp _shell
+
+
+
+
 _shell:
     mov al, '>'
     call print_char
     
-    jmp .read_loop
-
-
-    .read_loop:
-        call read_char
-
-        cmp al, 0x0D
-        je .enter
+    .input_loop:
+        mov di, txt_buff
+        call read_line
 
         cmp al, 0x1B
         je .exit
 
-        call print_char
-        jmp .read_loop
+        
 
-    .enter:
-        call mov_nextline
+
+        mov si, txt_buff
+        mov di, comhelp
+        mov cx, 5
+
+        repe cmpsb
+        je _help
+
+
+
+
+        
+        
         jmp _shell
-
+    
     .exit:
         call mov_nextline
         ret
@@ -131,7 +179,7 @@ _shell:
 ; ENTRY POINT ------------------------------------------------------------------ 
 
 main:
-    mov bx, msgb
+    mov si, msgb
     call print_str
     call mov_nextline
     call mov_nextline
@@ -149,7 +197,7 @@ main:
 halt:
 
 
-    mov bx, msgh
+    mov si, msgh
     call print_str
     call mov_nextline
     call mov_nextline
@@ -167,7 +215,7 @@ halt:
 
 
 
-    mov bx, msgcl
+    mov si, msgcl
     call print_str
 
     mov ax, (p_end - $$)
