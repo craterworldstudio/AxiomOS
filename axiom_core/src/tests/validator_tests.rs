@@ -8,6 +8,7 @@ use crate::capability::{
     Invocation,
     AUTH_READ,
     AUTH_WRITE,
+    AUTH_DELEGATE,
 };
 use crate::crypto::{compute_hash, GENESIS_HASH};
 use crate::store::CapabilityStore;
@@ -82,6 +83,7 @@ fn sign_invocation(
 #[test]
 fn test_01_valid_genesis_to_child_delegation() {
     let mut env = TestEnvironment::new();
+    let mut csprng = OsRng;
 
     let child_signer = SigningKey::generate(&mut csprng);
     let object_id = compute_hash(b"axiom-test-object");
@@ -92,7 +94,7 @@ fn test_01_valid_genesis_to_child_delegation() {
 
     let genesis = make_capability(
         object_id,
-        AUTH_READ | AUTH_WRITE,
+        AUTH_READ | AUTH_WRITE | AUTH_DELEGATE,
         GENESIS_HASH,
         0,
         env.genesis_key.verifying_key(),
@@ -147,6 +149,7 @@ fn test_01_valid_genesis_to_child_delegation() {
 #[test]
 fn test_03_authority_escalation_is_rejected() {
     let mut env = TestEnvironment::new();
+    let mut csprng = OsRng;
 
     let child_signer = SigningKey::generate(&mut csprng);
     let object_id = compute_hash(b"axiom-test-object");
@@ -159,7 +162,7 @@ fn test_03_authority_escalation_is_rejected() {
 
     let genesis = make_capability(
         object_id,
-        AUTH_READ,
+        AUTH_READ | AUTH_DELEGATE,
         GENESIS_HASH,
         0,
         env.genesis_key.verifying_key(),
@@ -193,7 +196,7 @@ fn test_03_authority_escalation_is_rejected() {
         operation: AUTH_WRITE,
         nonce: 3,
         invocation_signature: sign_invocation(
-            &child_signer, &child_hash, AUTH_WRITE, 2
+            &child_signer, &child_hash, AUTH_WRITE, 3
         ),
     };
 

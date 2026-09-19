@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use crate::capability::{CapabilityHash, Capability, Invocation};
-use crate::crypto::{GENESIS_HASH, Ed25519Signature};
+use crate::capability::{Capability, Invocation, AUTH_DELEGATE};
+use crate::crypto::{GENESIS_HASH};
 use crate::store::CapabilityStore;
 
 #[derive(Debug, PartialEq)]
@@ -42,8 +42,7 @@ impl<'a> Validator<'a> {
         let cap = match self.store.capabilities.get(&capability_hash) {
             Some(cap) => cap,
             None => return ValidationResult::Rejected(RejectReason::CapabilityNotFound),
-                }
-        };
+                };
 
         // 2. Anti-replay check
         let nonce_tuple = (capability_hash, invocation.nonce);
@@ -82,7 +81,7 @@ impl<'a> Validator<'a> {
             return ValidationResult::Rejected(RejectReason::InvalidSignature);
         }
 
-        self.consumed_nonces.insert(nonce_tuple);
+        let _ = self.consumed_nonces.insert(nonce_tuple);
 
         ValidationResult::Valid
     }
@@ -134,7 +133,7 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
-    fn verify_invocation_signature(&self, _invocation: &Invocation, _cap: &Capability) -> bool {
+    fn verify_invocation_signature(&self, invocation: &Invocation, cap: &Capability) -> bool {
         // Reconstruct the exact byte payload the caller was required to sign:
         // [ capability_hash (32 bytes) | operation (8 bytes) | nonce (8 bytes) ]
         let mut payload = Vec::new();
