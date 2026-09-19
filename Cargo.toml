@@ -1,0 +1,3 @@
+[workspace]
+members = ["axiom_core"]
+resolver = "2"
