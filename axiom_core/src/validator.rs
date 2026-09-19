@@ -16,6 +16,7 @@ pub enum RejectReason {
     InvalidSignature,
     UnknownParent,
     CycleDetected,
+    DelegationNotPermitted,
     AuthorityViolation,
     Revoked,
     EpochInvalid,
@@ -39,7 +40,7 @@ impl<'a> Validator<'a> {
 
         let capability_hash = invocation.capability.hash;
         let cap = match self.store.capabilities.get(&capability_hash) {
-            Some(cap) => cap, None => {
+            Some(cap) => cap,
             None => return ValidationResult::Rejected(RejectReason::CapabilityNotFound),
                 }
         };
@@ -81,6 +82,8 @@ impl<'a> Validator<'a> {
             return ValidationResult::Rejected(RejectReason::InvalidSignature);
         }
 
+        self.consumed_nonces.insert(nonce_tuple);
+
         ValidationResult::Valid
     }
 
@@ -120,6 +123,9 @@ impl<'a> Validator<'a> {
             return Err(RejectReason::AuthorityViolation);
         }
 
+        if (parent.authority_mask & AUTH_DELEGATE) == 0 {
+            return Err(RejectReason::DelegationNotPermitted);
+        }    
         // Bitwise check: Child cannot possess bits that the Parent lacks.
         if (child.authority_mask & !parent.authority_mask) != 0 {
             return Err(RejectReason::AuthorityViolation);
