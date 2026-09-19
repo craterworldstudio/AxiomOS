@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use crate::capability::{CapabilityStore, CapabilityHash, Capability, Invocation};
+use crate::capability::{CapabilityHash, Capability, Invocation};
 use crate::crypto::{GENESIS_HASH, Ed25519Signature};
 use crate::store::CapabilityStore;
 
