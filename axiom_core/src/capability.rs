@@ -10,7 +10,7 @@ pub struct Membrane {
     pub max_invocations: Option<u32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CapabilityRef {
     pub hash: CapabilityHash,
 }
@@ -22,6 +22,7 @@ pub struct Capability {
     pub parent_hash: CapabilityHash,
     pub membrane: Option<Membrane>,
     pub epoch_issued: u64,
+    
     pub owner_key: Ed25519PublicKey,        // NEW: The cryptographic identity allowed to invoke this
     pub issuer_signature: Ed25519Signature, // The signature of the parent capability's owner
 }
@@ -35,10 +36,38 @@ impl Capability {
         payload.extend_from_slice(&self.authority_mask.to_le_bytes());
         payload.extend_from_slice(&self.parent_hash);
         payload.extend_from_slice(self.owner_key.as_bytes());
+
+        match &self.membrane {
+            Some(membrane) => {
+                payload.push(1);
+
+                match membrane.expires_at_epoch {
+                    Some(epoch) => {
+                        payload.push(1);
+                        payload.extend_from_slice(&epoch.to_le_bytes());
+                    }
+                    None => payload.push(0),
+                }
+
+                match membrane.max_invocations {
+                    Some(max) => {
+                        payload.push(1);
+                        payload.extend_from_slice(&max.to_le_bytes());
+                    }
+                    None => payload.push(0),
+                }
+            }
+
+            None => {
+                payload.push(0);
+            }
+        }
+        
         compute_hash(&payload)
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Invocation {
     pub capability: CapabilityRef,
     pub operation: u64,
