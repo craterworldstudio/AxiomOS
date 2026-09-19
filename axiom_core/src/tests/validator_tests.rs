@@ -128,3 +128,64 @@ fn test_01_valid_genesis_to_child_delegation() {
         ValidationResult::Valid
     );
 }
+
+#[test]
+fn test_03_authority_escalation_is_rejected() {
+    let mut env = TestEnvironment::new();
+
+    let object_id = compute_hash(b"axiom-test-object");
+
+    // --------------------------------------------------
+    // Genesis capability
+    //
+    // Authority = READ only
+    // --------------------------------------------------
+
+    let genesis = make_capability(
+        object_id,
+        AUTH_READ,
+        GENESIS_HASH,
+        0,
+    );
+
+    let genesis_hash = env.store.inject_for_test(genesis);
+
+    // --------------------------------------------------
+    // Malicious child
+    //
+    // Parent = READ
+    // Child  = READ | WRITE
+    //
+    // This violates monotonic attenuation.
+    // --------------------------------------------------
+
+    let malicious_child = make_capability(
+        object_id,
+        AUTH_READ | AUTH_WRITE,
+        genesis_hash,
+        1,
+    );
+
+    let child_hash = env.store.inject_for_test(malicious_child);
+
+    let invocation = Invocation {
+        capability: CapabilityRef {
+            hash: child_hash,
+        },
+        operation: AUTH_WRITE,
+        nonce: 3,
+        invocation_signature: {
+            let message = b"axiom-test-invocation";
+            env.genesis_key.sign(message)
+        },
+    };
+
+    let result = env.run_validator(&invocation);
+
+    assert_eq!(
+        result,
+        ValidationResult::Rejected(
+            RejectReason::AuthorityViolation
+        )
+    );
+}
