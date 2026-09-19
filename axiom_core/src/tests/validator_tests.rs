@@ -49,6 +49,7 @@ fn make_capability(
     authority_mask: u64,
     parent_hash: [u8; 32],
     epoch: u64,
+    owner_key: ed25519_dalek::VerifyingKey, // Bind it!
 ) -> Capability {
     Capability {
         target_object: target,
@@ -56,14 +57,26 @@ fn make_capability(
         parent_hash,
         membrane: None,
         epoch_issued: epoch,
+        owner_key, 
         issuer_signature: {
             let mut csprng = OsRng;
-            let key = SigningKey::generate(&mut csprng);
-
-            let message = b"axiom-test-capability";
-            key.sign(message)
+            let random_signer = SigningKey::generate(&mut csprng);
+            random_signer.sign(b"mocked-issuer-signature")
         },
     }
+}
+
+fn sign_invocation(
+    signer: &SigningKey,
+    cap_hash: &[u8; 32],
+    operation: u64,
+    nonce: u64,
+) -> ed25519_dalek::Signature {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(cap_hash);
+    payload.extend_from_slice(&operation.to_le_bytes());
+    payload.extend_from_slice(&nonce.to_le_bytes());
+    signer.sign(&payload)
 }
 
 #[test]
