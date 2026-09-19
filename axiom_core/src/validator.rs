@@ -46,8 +46,8 @@ impl<'a> Validator<'a> {
         };
 
         // 2. Anti-replay check
-        let nonce_tuple = (invocation.capability, invocation.nonce);
-        if !self.consumed_nonces.insert(nonce_tuple) {
+        let nonce_tuple = (capability_hash, invocation.nonce);
+        if self.consumed_nonces.contains(&nonce_tuple) {
             return ValidationResult::Rejected(RejectReason::InvalidNonce);
         }
 
