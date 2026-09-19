@@ -16,3 +16,23 @@ Establish the minimal viable runtime capable of enforcing the Axiom capability p
 * Persistence (VGOS comes in Axiom 1).
 * Multi-threading (Keep the validator deterministic for now).
 * Human interaction (Tests will be driven by an automated test harness).
+
+## The Mathematical Invariant of Authority
+Axiom's security model relies on a single, mathematically verifiable invariant enforced during every capability invocation:
+> *Authority monotonically decreases along a delegation edge, unless an explicitly defined, mathematically proven authority transformation exists.*
+
+If `Capability A` delegates to `Capability B`, `B` may attenuate (reduce) the authority it grants, but it can never expand it. A read-only capability cannot spawn a write-capable child. The validator enforces this via bitwise subset verification (`child.mask & !parent.mask == 0`) and Merkle-DAG traversal. 
+
+## ADR-0001: Capabilities Are References
+In legacy systems like JWTs, the caller provides the token containing the claims. In Axiom, **Capabilities are References**. The invocation carries only the `CapabilityHash`. The kernel resolves this reference against its immutable `CapabilityStore`. 
+* **Benefit:** Eliminates caller-side forgery of capability parameters. The capability store becomes part of the validated state rather than trusting caller-provided authority payloads.
+
+## The Test Suite
+Axiom 0 correctness is defined by its ability to yield a deterministic `ValidationResult` across the following cryptographic vectors:
+* `TEST 01 - 02`: Genesis and Valid Delegation -> `VALID`
+* `TEST 03`: Delegation granting more authority -> `REJECTED (AuthorityViolation)`
+* `TEST 04 - 06`: Forged Parent/Signature/Unknown -> `REJECTED`
+* `TEST 07`: Capability Cycle (A -> B -> A) -> `REJECTED (CycleDetected)`
+* `TEST 08 - 09`: Revoked Capability or Ancestor -> `REJECTED (Revoked)`
+* `TEST 10 - 11`: Membrane Violations -> `REJECTED (MembraneViolation)`
+* `TEST 12`: Replayed Nonce -> `REJECTED (InvalidNonce)`
