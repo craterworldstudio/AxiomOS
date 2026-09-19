@@ -120,7 +120,14 @@ impl<'a> Validator<'a> {
     }
 
     fn verify_invocation_signature(&self, _invocation: &Invocation, _cap: &Capability) -> bool {
-        // Assume Ed25519 verification succeeds for Axiom 0 scaffolding
-        true 
+        // Reconstruct the exact byte payload the caller was required to sign:
+        // [ capability_hash (32 bytes) | operation (8 bytes) | nonce (8 bytes) ]
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&invocation.capability.hash);
+        payload.extend_from_slice(&invocation.operation.to_le_bytes());
+        payload.extend_from_slice(&invocation.nonce.to_le_bytes());
+
+        // Verify using the real crypto backend against the Capability's authorized owner
+        crate::crypto::verify_signature(&cap.owner_key, &payload, &invocation.invocation_signature)
     }
 }
