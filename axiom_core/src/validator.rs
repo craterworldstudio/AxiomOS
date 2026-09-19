@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use crate::capability::{CapabilityStore, CapabilityHash, Capability, Invocation};
 use crate::crypto::{GENESIS_HASH, Ed25519Signature};
+use crate::store::CapabilityStore;
 
+#[derive(Debug, PartialEq)]
 pub enum ValidationResult {
     Valid,
     Rejected(RejectReason),
@@ -24,15 +26,22 @@ pub enum RejectReason {
 pub struct Validator<'a> {
     store: &'a CapabilityStore,
     current_epoch: u64,
-    consumed_nonces: &'a mut HashSet<(CapabilityHash, u64)>, // Ephemeral for Axiom 0
+    consumed_nonces: &'a mut HashSet<([u8; 32], u64)>, // Ephemeral for Axiom 0
 }
 
 impl<'a> Validator<'a> {
+    pub fn new( store: &'a CapabilityStore, current_epoch: u64,consumed_nonces: &'a mut HashSet<([u8; 32], u64)>, ) -> Self {
+        Self { store, current_epoch, consumed_nonces, }
+    }
+    
     pub fn validate(&mut self, invocation: &Invocation) -> ValidationResult {
         // 1. Resolve capability reference
-        let cap = match self.store.capabilities.get(&invocation.capability) {
-            Some(cap) => cap,
+
+        let capability_hash = invocation.capability.hash;
+        let cap = match self.store.capabilities.get(&capability_hash) {
+            Some(cap) => cap, None => {
             None => return ValidationResult::Rejected(RejectReason::CapabilityNotFound),
+                }
         };
 
         // 2. Anti-replay check
@@ -42,7 +51,7 @@ impl<'a> Validator<'a> {
         }
 
         // 3. Cryptographic identity check
-        if cap.identity_hash() != invocation.capability {
+        if cap.identity_hash() != capability_hash {
             return ValidationResult::Rejected(RejectReason::CapabilityHashMismatch);
         }
 
@@ -55,7 +64,7 @@ impl<'a> Validator<'a> {
         if let Some(membrane) = &cap.membrane {
             if let Some(expiry) = membrane.expires_at_epoch {
                 if self.current_epoch > expiry {
-                    return ValidationResult::Rejected(RejectReason::MembraneViolation);
+                    return ValidationResult::Rejected(RejectReason::MembraneViolation, );
                 }
             }
             // In Axiom 0, MaxInvocations would be tracked in the Store's mutable state
