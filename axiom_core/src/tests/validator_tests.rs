@@ -1,4 +1,4 @@
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use std::collections::HashSet;
 
@@ -49,7 +49,7 @@ fn make_capability(
     authority_mask: u64,
     parent_hash: [u8; 32],
     epoch: u64,
-    owner_key: ed25519_dalek::VerifyingKey, // Bind it!
+    owner_key: VerifyingKey, // Bind it!
 ) -> Capability {
     Capability {
         target_object: target,
@@ -83,6 +83,7 @@ fn sign_invocation(
 fn test_01_valid_genesis_to_child_delegation() {
     let mut env = TestEnvironment::new();
 
+    let child_signer = SigningKey::generate(&mut csprng);
     let object_id = compute_hash(b"axiom-test-object");
 
     // --------------------------------------------------
@@ -94,6 +95,7 @@ fn test_01_valid_genesis_to_child_delegation() {
         AUTH_READ | AUTH_WRITE,
         GENESIS_HASH,
         0,
+        env.genesis_key.verifying_key(),
     );
 
     let genesis_hash = env.store.inject_for_test(genesis);
@@ -114,6 +116,7 @@ fn test_01_valid_genesis_to_child_delegation() {
         AUTH_READ,
         genesis_hash,
         1,
+        child_signer.verifying_key(),
     );
 
     let child_hash = env.store.inject_for_test(child);
@@ -128,10 +131,9 @@ fn test_01_valid_genesis_to_child_delegation() {
         },
         operation: AUTH_READ,
         nonce: 1,
-        invocation_signature: {
-            let message = b"axiom-test-invocation";
-            env.genesis_key.sign(message)
-        },
+        invocation_signature: sign_invocation(
+            &child_signer, &child_hash, AUTH_READ, 1
+        ),
     };
 
     let result = env.run_validator(&invocation);
@@ -146,6 +148,7 @@ fn test_01_valid_genesis_to_child_delegation() {
 fn test_03_authority_escalation_is_rejected() {
     let mut env = TestEnvironment::new();
 
+    let child_signer = SigningKey::generate(&mut csprng);
     let object_id = compute_hash(b"axiom-test-object");
 
     // --------------------------------------------------
@@ -159,6 +162,7 @@ fn test_03_authority_escalation_is_rejected() {
         AUTH_READ,
         GENESIS_HASH,
         0,
+        env.genesis_key.verifying_key(),
     );
 
     let genesis_hash = env.store.inject_for_test(genesis);
@@ -177,6 +181,7 @@ fn test_03_authority_escalation_is_rejected() {
         AUTH_READ | AUTH_WRITE,
         genesis_hash,
         1,
+        child_signer.verifying_key(),
     );
 
     let child_hash = env.store.inject_for_test(malicious_child);
@@ -187,10 +192,9 @@ fn test_03_authority_escalation_is_rejected() {
         },
         operation: AUTH_WRITE,
         nonce: 3,
-        invocation_signature: {
-            let message = b"axiom-test-invocation";
-            env.genesis_key.sign(message)
-        },
+        invocation_signature: sign_invocation(
+            &child_signer, &child_hash, AUTH_WRITE, 2
+        ),
     };
 
     let result = env.run_validator(&invocation);
