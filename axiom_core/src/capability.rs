@@ -36,6 +36,7 @@ impl Capability {
         payload.extend_from_slice(&self.authority_mask.to_le_bytes());
         payload.extend_from_slice(&self.parent_hash);
         payload.extend_from_slice(self.owner_key.as_bytes());
+        payload.extend_from_slice(&self.epoch_issued.to_le_bytes())
 
         match &self.membrane {
             Some(membrane) => {
