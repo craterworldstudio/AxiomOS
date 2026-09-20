@@ -41,3 +41,4 @@ Axiom 0 correctness is defined by its ability to yield a deterministic `Validati
 
 ## Milestone 2: Cryptographic Provenance and the Silicon Root
 Axiom authority has exactly one cryptographic entry point: the trusted `HardwareRootKey`. Every subsequent capability must derive from Genesis through a verifiable chain of parent authorization. Possession of a capability proves nothing unless its entire lineage terminates at the trusted `GenesisRoot`.
+

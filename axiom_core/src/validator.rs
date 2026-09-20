@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use crate::capability::{Capability, Invocation, AUTH_DELEGATE};
+use crate::capability::{Capability, Invocation, AUTH_DELEGATE, RejectReason, verify_delegation};
 use crate::crypto::{Ed25519PublicKey, GENESIS_HASH};
 use crate::store::CapabilityStore;
 
@@ -7,23 +7,6 @@ use crate::store::CapabilityStore;
 pub enum ValidationResult {
     Valid,
     Rejected(RejectReason),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum RejectReason {
-    CapabilityNotFound,
-    CapabilityHashMismatch,
-    InvalidSignature,
-    UnknownParent,
-    CycleDetected,
-    DelegationNotPermitted,
-    AuthorityViolation,
-    Revoked,
-    EpochInvalid,
-    MembraneViolation,
-    InvalidNonce,
-    InvalidIssuerSignature,
-    GenesisMismatch,
 }
 
 pub struct Validator<'a> {
@@ -47,7 +30,7 @@ impl<'a> Validator<'a> {
         // 1. Resolve capability reference
 
         let capability_hash = invocation.capability.hash;
-        let cap = match self.store.capabilities.get(&capability_hash) {
+        let cap = match self.store.get_capability(&capability_hash) {
             Some(cap) => cap,
             None => return ValidationResult::Rejected(RejectReason::CapabilityNotFound),
                 };
@@ -106,50 +89,21 @@ impl<'a> Validator<'a> {
             }
 
             // Check if current or any ancestor is tombstoned
-            if self.store.tombstones.contains_key(&hash) {
+            if self.store.is_revoked(&hash) {
                 return Err(RejectReason::Revoked);
             }
-
 
             if current.parent_hash == GENESIS_HASH {
                 return self.verify_genesis(current);
             }
 
-            let parent = self.store.capabilities
-                .get(&current.parent_hash)
+            let parent = self.store.get_capability(&current.parent_hash)
                 .ok_or(RejectReason::UnknownParent)?;
 
-            self.verify_delegation(current, parent)?;
+            verify_delegation(current, parent)?;
 
             current = parent;
         }
-    }
-
-    fn verify_delegation(&self, child: &Capability, parent: &Capability) -> Result<(), RejectReason> {
-        if child.target_object != parent.target_object {
-            return Err(RejectReason::AuthorityViolation);
-        }
-        
-        if child.epoch_issued < parent.epoch_issued {
-            return Err(RejectReason::EpochInvalid);
-        }
-
-        if (parent.authority_mask & AUTH_DELEGATE) == 0 {
-            return Err(RejectReason::DelegationNotPermitted);
-        }    
-        // Bitwise check: Child cannot possess bits that the Parent lacks.
-        if (child.authority_mask & !parent.authority_mask) != 0 {
-            return Err(RejectReason::AuthorityViolation);
-        }
-
-        let mut payload = b"AXIOM/CAPABILITY-ISSUANCE/V1".to_vec();
-        payload.extend_from_slice(&child.identity_hash());
-
-        if !crate::crypto::verify_signature(&parent.owner_key, &payload, &child.issuer_signature) {
-            return Err(RejectReason::InvalidIssuerSignature);
-        }
-
-        Ok(())
     }
 
 

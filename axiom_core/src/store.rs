@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use crate::crypto::{CapabilityHash, Ed25519Signature};
-use crate::capability::Capability;
-use crate::validator::RejectReason;
+use crate::crypto::{CapabilityHash, Ed25519Signature, verify_signature};
+use crate::capability::{Capability, AUTH_DELEGATE, RejectReason, verify_delegation};
 
 #[derive(Debug, Clone)]
 pub struct GenesisRoot {
@@ -31,6 +30,17 @@ impl CapabilityStore {
             tombstones: HashMap::new(),
         }
     }
+    pub fn get_capability(&self, hash: &CapabilityHash) -> Option<&Capability> {
+        self.capabilities.get(hash)
+    }
+
+    pub fn get_genesis(&self) -> &GenesisRoot {
+        &self.genesis
+    }
+
+    pub fn is_revoked(&self, hash: &CapabilityHash) -> bool {
+        self.tombstones.contains_key(hash)
+    }
 
     /// DEPRECATED.
     /// In Axiom 0, we provide a raw insertion method for the test harness to construct reality.
@@ -46,28 +56,7 @@ impl CapabilityStore {
         let parent = self.capabilities.get(&child.parent_hash)
             .ok_or(RejectReason::UnknownParent)?;
 
-        if child.target_object != parent.target_object {
-            return Err(RejectReason::AuthorityViolation);
-        }
-
-        if child.epoch_issued < parent.epoch_issued {
-            return Err(RejectReason::EpochInvalid);
-        }
-
-        if (parent.authority_mask & AUTH_DELEGATE) == 0 {
-            return Err(RejectReason::DelegationNotPermitted);
-        }
-
-        if (child.authority_mask & !parent.authority_mask) != 0 {
-            return Err(RejectReason::AuthorityViolation);
-        }
-
-        let mut payload = b"AXIOM/CAPABILITY-ISSUANCE/V1".to_vec();
-        payload.extend_from_slice(&child.identity_hash());
-
-        if !verify_signature(&parent.owner_key, &payload, &child.issuer_signature) {
-            return Err(RejectReason::InvalidIssuerSignature);
-        }
+        verify_delegation(&child, parent)?;
 
         let hash = child.identity_hash();
         self.capabilities.insert(hash, child.clone());

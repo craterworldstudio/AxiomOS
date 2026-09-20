@@ -75,3 +75,49 @@ pub struct Invocation {
     pub nonce: u64,
     pub invocation_signature: Ed25519Signature,
 }
+
+#[derive(Debug, PartialEq)]
+pub enum RejectReason {
+    CapabilityNotFound,
+    CapabilityHashMismatch,
+    InvalidSignature,
+    InvalidIssuerSignature,
+    UnknownParent,
+    CycleDetected,
+    DelegationNotPermitted,
+    AuthorityViolation,
+    Revoked,
+    EpochInvalid,
+    MembraneViolation,
+    InvalidNonce,
+    GenesisMismatch,
+}
+
+/// The absolute source of truth for capability delegation physics.
+/// Evaluated identically during capability issuance and invocation lineage traversal.
+pub fn verify_delegation(child: &Capability, parent: &Capability) -> Result<(), RejectReason> {
+    if child.target_object != parent.target_object {
+        return Err(RejectReason::AuthorityViolation);
+    }
+
+    if child.epoch_issued < parent.epoch_issued {
+        return Err(RejectReason::EpochInvalid);
+    }
+
+    if (parent.authority_mask & AUTH_DELEGATE) == 0 {
+        return Err(RejectReason::DelegationNotPermitted);
+    }
+
+    if (child.authority_mask & !parent.authority_mask) != 0 {
+        return Err(RejectReason::AuthorityViolation);
+    }
+
+    let mut payload = b"AXIOM/CAPABILITY-ISSUANCE/V1".to_vec();
+    payload.extend_from_slice(&child.identity_hash());
+
+    if !crate::crypto::verify_signature(&parent.owner_key, &payload, &child.issuer_signature) {
+        return Err(RejectReason::InvalidIssuerSignature);
+    }
+
+    Ok(())
+}
