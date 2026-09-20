@@ -96,6 +96,14 @@ gdt_data:                   ; 32-bit Data Segment
     db 11001111b            ; Flags + Limit
     db 0x0                  ; Base
 
+gdt_code64:                 
+    dw 0xFFFF
+    dw 0x0000
+    db 0x00                 ; L=1, D=0 for 64-bit code segment
+    db 10011010b
+    db 10101111b
+    db 0x00
+
 gdt_end:
 
 gdt_descriptor:
@@ -104,6 +112,7 @@ gdt_descriptor:
 
 CODE_SEG equ gdt_code - gdt_start
 DATA_SEG equ gdt_data - gdt_start
+CODE64_SEG equ gdt_code64 - gdt_start
 
 ; ==========================================
 ; 32-Bit Protected Mode Execution
@@ -186,14 +195,63 @@ build_page_tables:
     mov edi, 3520           ; Row 21 (Skip a line)
     call vga_print
 
-pm_halt:
+enter_long_mode:
+    ; 1. Enable Physical Address Extension (CR4.PAE = bit 5)
+    mov eax, cr4
+    or eax, 1 << 5
+    mov cr4, eax
+
+    mov esi, msg_pae
+    mov edi, 3520           ; Row 22
+    call vga_print
+
+    ; 2. Enable Long Mode in EFER (IA32_EFER MSR = 0xC0000080, LME = bit 8)
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, 1 << 8
+    wrmsr
+
+    mov esi, msg_lme
+    mov edi, 3680           ; Row 23
+    call vga_print
+
+    ; 3. Enable Paging (CR0.PG = bit 31)
+    mov eax, cr0
+    or eax, 1 << 31
+    mov cr0, eax
+
+    ; 4. Far jump into the 64-bit code segment
+    jmp CODE64_SEG:long_mode_entry
+
+; ==========================================
+; 64-Bit Long Mode
+; ==========================================
+[BITS 64]
+long_mode_entry:
+    ; Establish known-good data segments
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov fs, ax
+    mov gs, ax
+
+    ; Known-good 64-bit stack
+    mov rsp, 0x90000
+
+    mov rsi, msg_long
+    mov edi, 3840           ; Row 24 (Last row on standard 80x25 VGA)
+    call vga_print64
+
+long_mode_halt:
     cli
     hlt
-    jmp pm_halt
-
+    jmp long_mode_halt
+    
 ; ------------------------------------------
 ; VGA telemetry helper
 ; ------------------------------------------
+[BITS 32]
 vga_print:
     push eax
     push ebx
@@ -222,6 +280,34 @@ vga_print:
     pop eax
     ret
 
+[BITS 64]
+vga_print64:
+    push rax
+    push rbx
+    mov ah, 0x0F
+.next64:
+    lodsb
+    test al, al
+    jz .done64
+    cmp al, 1
+    je .set_green64
+    cmp al, 2
+    je .set_white64
+    mov [0xB8000 + edi], al
+    mov [0xB8000 + edi + 1], ah
+    add edi, 2
+    jmp .next64
+.set_green64:
+    mov ah, 0x0A
+    jmp .next64
+.set_white64:
+    mov ah, 0x0F
+    jmp .next64
+.done64:
+    pop rbx
+    pop rax
+    ret
+
 ; ------------------------------------------
 ; Telemetry Strings
 ; ------------------------------------------
@@ -235,6 +321,9 @@ msg_pdpt   db "[ ", 1, "OK", 2, " ] PDPT  @ 0xA000", 0
 msg_pd     db "[ ", 1, "OK", 2, " ] PD    @ 0xB000", 0
 msg_cr3    db "[ ", 1, "OK", 2, " ] CR3   = 0x9000", 0
 msg_ready  db 1, "PAGE TABLES READY", 2, 0
+msg_pae    db "[ ", 1, "OK", 2, " ] PAE ENABLED", 0
+msg_lme    db "[ ", 1, "OK", 2, " ] LONG MODE MSR ENABLED", 0
+msg_long   db "[ ", 1, "OK", 2, " ] ENTERED 64-BIT LONG MODE", 0
 
 ; Pad Stage 2 to exactly 8 sectors (4096 bytes)
 times 4096-($-$$) db 0
