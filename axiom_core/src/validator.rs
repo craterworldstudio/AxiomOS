@@ -108,7 +108,7 @@ impl<'a> Validator<'a> {
 
 
     fn verify_genesis(&self, genesis: &Capability) -> Result<(), RejectReason> {
-        if genesis.identity_hash() != self.store.genesis.capability.identity_hash() {
+        if genesis.identity_hash() != self.store.get_genesis().capability.identity_hash() {
             return Err(RejectReason::GenesisMismatch);
         }
 
@@ -126,7 +126,7 @@ impl<'a> Validator<'a> {
         if !crate::crypto::verify_signature(
             self.hardware_root_key,
             &payload,
-            &self.store.genesis.root_signature,
+            &self.store.get_genesis().root_signature,
         ) {
             return Err(RejectReason::InvalidIssuerSignature);
         }

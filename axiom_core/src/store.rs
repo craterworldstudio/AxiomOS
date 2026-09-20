@@ -67,4 +67,23 @@ impl CapabilityStore {
     pub fn mark_tombstone(&mut self, hash: CapabilityHash, tombstone: Tombstone) {
         self.tombstones.insert(hash, tombstone);
     }
+
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_capability_for_test(
+        &mut self,
+        hash: CapabilityHash,
+        capability: Capability,
+    ) {
+        self.capabilities.insert(hash, capability);
+    }
+    
+    #[cfg(test)]
+    pub(crate) fn corrupt_genesis_for_test<F>(&mut self, mutate: F)
+    where
+        F: FnOnce(&mut Capability),
+    {
+        mutate(&mut self.genesis.capability);
+    }
+
 }

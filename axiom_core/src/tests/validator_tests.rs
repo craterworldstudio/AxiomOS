@@ -6,7 +6,7 @@ use crate::capability::{
     Capability, CapabilityRef, Invocation, AUTH_DELEGATE, AUTH_READ, AUTH_WRITE, RejectReason, 
 };
 use crate::crypto::{compute_hash, GENESIS_HASH};
-use crate::store::{CapabilityStore, GenesisRoot};
+use crate::store::{CapabilityStore, GenesisRoot,};
 use crate::validator::{ValidationResult, Validator};
 
 struct TestEnvironment {
@@ -106,7 +106,7 @@ fn test_01_valid_genesis_to_child_delegation() {
     let mut csprng = OsRng;
 
     let child_signer = SigningKey::generate(&mut csprng);
-    let genesis_hash = env.store.genesis.capability.identity_hash();
+    let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     let child = make_capability(
         object_id,
@@ -137,7 +137,7 @@ fn test_03_authority_escalation_is_rejected_at_issuance() {
     let mut csprng = OsRng;
 
     let child_signer = SigningKey::generate(&mut csprng);
-    let genesis_hash = env.store.genesis.capability.identity_hash();
+    let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     let malicious_child = make_capability(
         object_id,
@@ -163,7 +163,7 @@ fn test_04_invalid_signature_is_rejected_at_invocation() {
     
     let child_signer = SigningKey::generate(&mut csprng);
     let rogue_signer = SigningKey::generate(&mut csprng);
-    let genesis_hash = env.store.genesis.capability.identity_hash();
+    let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     let child = make_capability(
         object_id,
@@ -196,7 +196,7 @@ fn test_05_invalid_issuer_signature_is_rejected_at_issuance() {
     
     let child_signer = SigningKey::generate(&mut csprng);
     let attacker_signer = SigningKey::generate(&mut csprng); 
-    let genesis_hash = env.store.genesis.capability.identity_hash();
+    let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     let child = make_capability(
         object_id,
@@ -220,7 +220,7 @@ fn test_06_tampered_capability_is_rejected_by_validator() {
     let mut csprng = OsRng;
     
     let child_signer = SigningKey::generate(&mut csprng);
-    let genesis_hash = env.store.genesis.capability.identity_hash();
+    let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     let mut child = make_capability(
         object_id,
@@ -235,7 +235,7 @@ fn test_06_tampered_capability_is_rejected_by_validator() {
     
     // MIGRATED: Simulate raw memory corruption bypassing `issue()`
     child.authority_mask = AUTH_READ | AUTH_WRITE; 
-    env.store.capabilities.insert(original_hash, child); 
+    env.store.corrupt_capability_for_test(original_hash, child);
 
     let invocation = Invocation {
         capability: CapabilityRef { hash: original_hash },
@@ -257,7 +257,7 @@ fn test_07_tampered_genesis_is_rejected_by_validator() {
     let mut csprng = OsRng;
     
     let child_signer = SigningKey::generate(&mut csprng);
-    let original_genesis_hash = env.store.genesis.capability.identity_hash();
+    let original_genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     let child = make_capability(
         object_id,
@@ -270,7 +270,9 @@ fn test_07_tampered_genesis_is_rejected_by_validator() {
     let child_hash = env.store.issue(child).unwrap();
 
     // MIGRATED: Mutate the Genesis Root directly to simulate corruption
-    env.store.genesis.capability.authority_mask |= AUTH_WRITE;
+    env.store.corrupt_genesis_for_test(|genesis| {
+        genesis.authority_mask |= AUTH_WRITE;
+    });
 
     let invocation = Invocation {
         capability: CapabilityRef { hash: child_hash },
@@ -292,7 +294,7 @@ fn test_08_wrong_hardware_root_is_rejected_by_validator() {
     let mut csprng = OsRng;
     
     let child_signer = SigningKey::generate(&mut csprng);
-    let genesis_hash = env.store.genesis.capability.identity_hash();
+    let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     let child = make_capability(
         object_id,
@@ -360,7 +362,7 @@ fn test_10_child_cannot_predate_parent_at_issuance() {
     
     let child_signer = SigningKey::generate(&mut csprng);
     let grandchild_signer = SigningKey::generate(&mut csprng);
-    let genesis_hash = env.store.genesis.capability.identity_hash();
+    let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
     // Child is issued at Epoch 2 (Valid: 2 >= 0)
     let child = make_capability(
