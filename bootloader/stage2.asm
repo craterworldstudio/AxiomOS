@@ -27,7 +27,7 @@ load_kernel:
     mov al, 5               ; Read 5 sectors 
     mov ch, 0               ; Cylinder 0
     mov dh, 0               ; Head 0
-    mov cl, 6               ; Start reading at Sector 6
+    mov cl, 10               ; Start reading at Sector 6
     mov bx, 0x1000          ; Load to Segment 0x1000 (0x1000:0x0000 = physical 0x10000)
     mov es, bx
     xor bx, bx              ; Offset 0
@@ -122,26 +122,119 @@ init_pm:
     mov ebp, 0x90000
     mov esp, ebp
 
-    ; 6. Print diagnostic proof directly to the VGA hardware buffer
-    ; We write to 0xB8140 (Row 3) to avoid overwriting the BIOS text
-    mov ebx, pm_msg
-    mov edx, 0xB8140
-print_pm:
-    mov al, [ebx]
-    cmp al, 0
-    je pm_halt
-    mov [edx], al           ; Write the character
-    mov byte [edx+1], 0x0A  ; Write the color (Light Green)
-    inc ebx
-    add edx, 2
-    jmp print_pm
+    ; Print retroactive 16-bit status starting at Row 12 (safely below BIOS text)
+    mov esi, msg_header
+    mov edi, 1920           ; Row 12
+    call vga_print
+
+    mov esi, msg_kernel
+    mov edi, 2080           ; Row 13
+    call vga_print
+
+    mov esi, msg_a20
+    mov edi, 2240           ; Row 14
+    call vga_print
+
+    mov esi, msg_gdt
+    mov edi, 2400           ; Row 15
+    call vga_print
+
+    mov esi, msg_pm
+    mov edi, 2560           ; Row 16
+    call vga_print
+
+
+
+
+
+build_page_tables:
+    ; 1. Clear 12 KiB of memory for PML4, PDPT, and PD (0x9000 - 0xBFFF)
+    mov edi, 0x9000
+    mov ecx, 3072           ; 12288 bytes / 4 bytes per DWORD = 3072
+    xor eax, eax            ; We want to fill memory with zeros
+    rep stosd               ; Store EAX (0) at [EDI], decrement ECX, repeat
+
+    ; 2. Link PML4[0] to PDPT
+    ; Address 0xA000 + Present (1) + Read/Write (2) = 0xA003
+    mov dword [0x9000], 0xA003
+    mov esi, msg_pml4
+    mov edi, 2720            ; Row 17
+    call vga_print
+
+    ; 3. Link PDPT[0] to PD
+    ; Address 0xB000 + Present (1) + Read/Write (2) = 0xB003
+    mov dword [0xA000], 0xB003
+    mov esi, msg_pdpt
+    mov edi, 2880           ; Row 18
+    call vga_print
+
+    ; 4. Link PD[0] to the 2 MiB identity page (physical 0x0)
+    ; Address 0x0 + Present (1) + Read/Write (2) + Page Size (0x80) = 0x0083
+    mov dword [0xB000], 0x0083
+    mov esi, msg_pd
+    mov edi, 3040           ; Row 19
+    call vga_print
+
+    ; 5. Load CR3 with the physical address of the PML4
+    mov eax, 0x9000
+    mov cr3, eax
+    mov esi, msg_cr3
+    mov edi, 3200           ; Row 20
+    call vga_print
+
+    mov esi, msg_ready
+    mov edi, 3520           ; Row 21 (Skip a line)
+    call vga_print
 
 pm_halt:
     cli
     hlt
     jmp pm_halt
 
-pm_msg db "32-BIT PROTECTED MODE ONLINE", 0
+; ------------------------------------------
+; VGA telemetry helper
+; ------------------------------------------
+vga_print:
+    push eax
+    push ebx
+    mov ah, 0x0F            ; Default color: White
+.next:
+    lodsb
+    test al, al
+    jz .done
+    cmp al, 1               ; Is it the "Switch to Green" code?
+    je .set_green
+    cmp al, 2               ; Is it the "Switch to White" code?
+    je .set_white
+    ; Normal printable character
+    mov [0xB8000 + edi], al
+    mov [0xB8000 + edi + 1], ah
+    add edi, 2
+    jmp .next
+.set_green:
+    mov ah, 0x0A            ; Light Green
+    jmp .next
+.set_white:
+    mov ah, 0x0F            ; White
+    jmp .next
+.done:
+    pop ebx
+    pop eax
+    ret
 
-; Pad Stage 2 to exactly 4 sectors (2048 bytes)
-times 2048-($-$$) db 0
+; ------------------------------------------
+; Telemetry Strings
+; ------------------------------------------
+msg_header db "AXIOM BOOT // STAGE 2", 0
+msg_kernel db "[ ", 1, "OK", 2, " ] KERNEL LOADED @ 0x10000", 0
+msg_a20    db "[ ", 1, "OK", 2, " ] A20 LINE ENABLED", 0
+msg_gdt    db "[ ", 1, "OK", 2, " ] GDT LOADED", 0
+msg_pm     db "[ ", 1, "OK", 2, " ] PROTECTED MODE", 0
+msg_pml4   db "[ ", 1, "OK", 2, " ] PML4  @ 0x9000", 0
+msg_pdpt   db "[ ", 1, "OK", 2, " ] PDPT  @ 0xA000", 0
+msg_pd     db "[ ", 1, "OK", 2, " ] PD    @ 0xB000", 0
+msg_cr3    db "[ ", 1, "OK", 2, " ] CR3   = 0x9000", 0
+msg_ready  db 1, "PAGE TABLES READY", 2, 0
+
+; Pad Stage 2 to exactly 8 sectors (4096 bytes)
+times 4096-($-$$) db 0

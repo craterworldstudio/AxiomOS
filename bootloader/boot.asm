@@ -26,7 +26,7 @@ print_stage1:
 load_stage2:
     ; Read Stage 2 from disk into memory at 0x7E00
     mov ah, 0x02            ; BIOS Read Sector function
-    mov al, 4               ; Read 4 sectors (2048 bytes for Stage 2)
+    mov al, 8               ; Read 8 sectors (4096 bytes for Stage 2)
     mov ch, 0               ; Cylinder 0
     mov dh, 0               ; Head 0
     mov cl, 2               ; Sector 2 (1-indexed; Sector 1 is this bootloader)
