@@ -42,19 +42,15 @@ impl CapabilityStore {
         self.tombstones.contains_key(hash)
     }
 
-    /// DEPRECATED.
-    /// In Axiom 0, we provide a raw insertion method for the test harness to construct reality.
-    /// In production, this would only be written to by the kernel after a validated Epoch transaction.
-    pub fn inject_for_test(&mut self, cap: Capability) -> CapabilityHash {
-        let hash = cap.identity_hash();
-        self.capabilities.insert(hash, cap);
-        hash
-    }
     /// Transactional issuance primitive. Replaces the `inject_for_test` escape hatch.
     /// Enforces capability physics before allowing authority to enter the graph.
     pub fn issue(&mut self, child: Capability) -> Result<CapabilityHash, RejectReason> {
         let parent = self.capabilities.get(&child.parent_hash)
             .ok_or(RejectReason::UnknownParent)?;
+
+        if self.is_revoked(&child.parent_hash) {
+            return Err(RejectReason::Revoked);
+        }
 
         verify_delegation(&child, parent)?;
 
@@ -68,6 +64,21 @@ impl CapabilityStore {
         self.tombstones.insert(hash, tombstone);
     }
 
+
+
+
+
+
+
+
+    /// DEPRECATED.
+    /// In Axiom 0, we provide a raw insertion method for the test harness to construct reality.
+    /// In production, this would only be written to by the kernel after a validated Epoch transaction.
+    pub fn inject_for_test(&mut self, cap: Capability) -> CapabilityHash {
+        let hash = cap.identity_hash();
+        self.capabilities.insert(hash, cap);
+        hash
+    }
 
     #[cfg(test)]
     pub(crate) fn corrupt_capability_for_test(

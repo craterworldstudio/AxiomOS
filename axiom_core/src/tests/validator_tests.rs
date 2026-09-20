@@ -100,34 +100,48 @@ fn sign_invocation(
 }
 
 #[test]
-fn test_01_valid_genesis_to_child_delegation() {
+fn test_11_revoked_parent_cannot_issue() {
     let object_id = compute_hash(b"axiom-test-object");
-    let mut env = TestEnvironment::new(object_id, AUTH_READ | AUTH_WRITE | AUTH_DELEGATE);
+    let mut env = TestEnvironment::new(object_id, AUTH_READ | AUTH_DELEGATE);
     let mut csprng = OsRng;
-
+    
     let child_signer = SigningKey::generate(&mut csprng);
+    let grandchild_signer = SigningKey::generate(&mut csprng);
     let genesis_hash = env.store.get_genesis().capability.identity_hash();
 
+    // 1. Issue a valid child
     let child = make_capability(
         object_id,
-        AUTH_READ,
+        AUTH_READ | AUTH_DELEGATE,
         genesis_hash,
         1,
         child_signer.verifying_key(),
         &env.hardware_root_key,
     );
-
-    // MIGRATED: Use proper issuance API
     let child_hash = env.store.issue(child).unwrap();
 
-    let invocation = Invocation {
-        capability: CapabilityRef { hash: child_hash },
-        operation: AUTH_READ,
-        nonce: 1,
-        invocation_signature: sign_invocation(&child_signer, &child_hash, AUTH_READ, 1),
+    // 2. Revoke the child
+    let tombstone = crate::store::Tombstone {
+        revoked_at_epoch: 2,
+        issuer_signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]), // Mock for Axiom 0
     };
+    env.store.mark_tombstone(child_hash, tombstone);
 
-    assert_eq!(env.run_validator(&invocation), ValidationResult::Valid);
+    // 3. Attempt to issue a grandchild from the revoked child
+    let grandchild = make_capability(
+        object_id,
+        AUTH_READ,
+        child_hash,
+        3,
+        grandchild_signer.verifying_key(),
+        &child_signer,
+    );
+
+    // The issuance must fail at the store boundary, not during invocation
+    assert_eq!(
+        env.store.issue(grandchild),
+        Err(RejectReason::Revoked)
+    );
 }
 
 #[test]
