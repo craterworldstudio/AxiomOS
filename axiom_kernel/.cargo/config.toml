@@ -1,0 +1,8 @@
+[build]
+target = "x86_64-unknown-none"
+
+# Use the LLVM linker packaged with Rust
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-nostartfiles",
+]

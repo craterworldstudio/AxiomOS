@@ -1,3 +1,6 @@
 [workspace]
-members = ["axiom_core"]
+members = [
+    "axiom_core",
+    "axiom_kernel"
+]
 resolver = "2"
