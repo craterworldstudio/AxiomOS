@@ -12,6 +12,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiom_kernel"
+version = "0.1.0"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

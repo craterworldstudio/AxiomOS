@@ -2,8 +2,9 @@
 name = "axiom_kernel"
 version = "0.1.0"
 edition = "2021"
-authors = ["Luna", "Gemini"]
+authors = ["Luna", "Gemini", "Tori"]
 description = "Axiom OS Bare-Metal Substrate"
 
 [dependencies]
 # Currently empty. We rely on nothing but core.
+
