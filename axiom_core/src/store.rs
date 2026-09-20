@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use crate::crypto::{CapabilityHash, Ed25519Signature, verify_signature};
-use crate::capability::{Capability, AUTH_DELEGATE, RejectReason, verify_delegation};
+use crate::crypto::{CapabilityHash, Ed25519Signature};
+use crate::capability::{Capability, RejectReason, verify_delegation};
 
 #[derive(Debug, Clone)]
 pub struct GenesisRoot {
@@ -15,9 +15,9 @@ pub struct Tombstone {
 }
 
 pub struct CapabilityStore {
-    pub genesis: GenesisRoot,
-    pub capabilities: HashMap<CapabilityHash, Capability>,
-    pub tombstones: HashMap<CapabilityHash, Tombstone>,
+    genesis: GenesisRoot,
+    capabilities: HashMap<CapabilityHash, Capability>,
+    tombstones: HashMap<CapabilityHash, Tombstone>,
 }
 
 impl CapabilityStore {

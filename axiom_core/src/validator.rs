@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use crate::capability::{Capability, Invocation, AUTH_DELEGATE, RejectReason, verify_delegation};
+use crate::capability::{Capability, Invocation, RejectReason, verify_delegation};
 use crate::crypto::{Ed25519PublicKey, GENESIS_HASH};
 use crate::store::CapabilityStore;
 
