@@ -129,6 +129,10 @@ impl<'a> Validator<'a> {
         if child.target_object != parent.target_object {
             return Err(RejectReason::AuthorityViolation);
         }
+        
+        if child.epoch_issued < parent.epoch_issued {
+            return Err(RejectReason::EpochInvalid);
+        }
 
         if (parent.authority_mask & AUTH_DELEGATE) == 0 {
             return Err(RejectReason::DelegationNotPermitted);

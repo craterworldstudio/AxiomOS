@@ -413,3 +413,49 @@ fn test_09_unknown_parent_is_rejected() {
         ValidationResult::Rejected(RejectReason::UnknownParent)
     );
 }
+
+#[test]
+fn test_10_child_cannot_predate_parent() {
+    let object_id = compute_hash(b"axiom-test-object");
+    // Genesis is created at Epoch 0 by TestEnvironment::new()
+    let mut env = TestEnvironment::new(object_id, AUTH_READ | AUTH_DELEGATE);
+    let mut csprng = OsRng;
+    
+    let child_signer = SigningKey::generate(&mut csprng);
+    let grandchild_signer = SigningKey::generate(&mut csprng);
+    let genesis_hash = env.store.genesis.capability.identity_hash();
+
+    // Child is issued at Epoch 2 (Valid: 2 >= 0)
+    let child = make_capability(
+        object_id,
+        AUTH_READ | AUTH_DELEGATE,
+        genesis_hash,
+        2, // Epoch 2
+        child_signer.verifying_key(),
+        &env.hardware_root_key,
+    );
+    let child_hash = env.store.inject_for_test(child);
+
+    // Grandchild is issued at Epoch 1 (Invalid: 1 < 2)
+    let grandchild = make_capability(
+        object_id,
+        AUTH_READ,
+        child_hash,
+        1, // Epoch 1 (Temporal Paradox)
+        grandchild_signer.verifying_key(),
+        &child_signer,
+    );
+    let grandchild_hash = env.store.inject_for_test(grandchild);
+
+    let invocation = Invocation {
+        capability: CapabilityRef { hash: grandchild_hash },
+        operation: AUTH_READ,
+        nonce: 1,
+        invocation_signature: sign_invocation(&grandchild_signer, &grandchild_hash, AUTH_READ, 1),
+    };
+
+    assert_eq!(
+        env.run_validator(&invocation),
+        ValidationResult::Rejected(RejectReason::EpochInvalid)
+    );
+}
