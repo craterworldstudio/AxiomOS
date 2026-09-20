@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use crate::capability::{Capability, Invocation, AUTH_DELEGATE};
-use crate::crypto::{GENESIS_HASH};
+use crate::crypto::{Ed25519PublicKey, GENESIS_HASH};
 use crate::store::CapabilityStore;
 
 #[derive(Debug, PartialEq)]
@@ -22,17 +22,25 @@ pub enum RejectReason {
     EpochInvalid,
     MembraneViolation,
     InvalidNonce,
+    InvalidIssuerSignature,
+    GenesisMismatch,
 }
 
 pub struct Validator<'a> {
     store: &'a CapabilityStore,
     current_epoch: u64,
     consumed_nonces: &'a mut HashSet<([u8; 32], u64)>, // Ephemeral for Axiom 0
+    hardware_root_key: &'a Ed25519PublicKey,
 }
 
 impl<'a> Validator<'a> {
-    pub fn new( store: &'a CapabilityStore, current_epoch: u64,consumed_nonces: &'a mut HashSet<([u8; 32], u64)>, ) -> Self {
-        Self { store, current_epoch, consumed_nonces, }
+    pub fn new( 
+        store: &'a CapabilityStore, 
+        current_epoch: u64,
+        consumed_nonces: &'a mut HashSet<([u8; 32], u64)>, 
+        hardware_root_key: &'a Ed25519PublicKey,
+    ) -> Self {
+        Self { store, current_epoch, consumed_nonces, hardware_root_key, }
     }
     
     pub fn validate(&mut self, invocation: &Invocation) -> ValidationResult {
@@ -102,9 +110,9 @@ impl<'a> Validator<'a> {
                 return Err(RejectReason::Revoked);
             }
 
+
             if current.parent_hash == GENESIS_HASH {
-                // In a complete implementation, verify Genesis signature against HardwareRootKey
-                return Ok(());
+                return self.verify_genesis(current);
             }
 
             let parent = self.store.capabilities
@@ -128,6 +136,41 @@ impl<'a> Validator<'a> {
         // Bitwise check: Child cannot possess bits that the Parent lacks.
         if (child.authority_mask & !parent.authority_mask) != 0 {
             return Err(RejectReason::AuthorityViolation);
+        }
+
+        let mut payload = b"AXIOM/CAPABILITY-ISSUANCE/V1".to_vec();
+        payload.extend_from_slice(&child.identity_hash());
+
+        if !crate::crypto::verify_signature(&parent.owner_key, &payload, &child.issuer_signature) {
+            return Err(RejectReason::InvalidIssuerSignature);
+        }
+
+        Ok(())
+    }
+
+
+    fn verify_genesis(&self, genesis: &Capability) -> Result<(), RejectReason> {
+        if genesis.identity_hash() != self.store.genesis.capability.identity_hash() {
+            return Err(RejectReason::GenesisMismatch);
+        }
+
+        if genesis.parent_hash != GENESIS_HASH {
+            return Err(RejectReason::GenesisMismatch);
+        }
+
+        if genesis.owner_key.as_bytes() != self.hardware_root_key.as_bytes() {
+            return Err(RejectReason::GenesisMismatch);
+        }
+
+        let mut payload = b"AXIOM/GENESIS/V1".to_vec();
+        payload.extend_from_slice(&genesis.identity_hash());
+
+        if !crate::crypto::verify_signature(
+            self.hardware_root_key,
+            &payload,
+            &self.store.genesis.root_signature,
+        ) {
+            return Err(RejectReason::InvalidIssuerSignature);
         }
 
         Ok(())
