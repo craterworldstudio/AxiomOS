@@ -179,7 +179,7 @@ impl<'a> Validator<'a> {
     fn verify_invocation_signature(&self, invocation: &Invocation, cap: &Capability) -> bool {
         // Reconstruct the exact byte payload the caller was required to sign:
         // [ capability_hash (32 bytes) | operation (8 bytes) | nonce (8 bytes) ]
-        let mut payload = Vec::new();
+        let mut payload = b"AXIOM/INVOCATION/V1".to_vec();
         payload.extend_from_slice(&invocation.capability.hash);
         payload.extend_from_slice(&invocation.operation.to_le_bytes());
         payload.extend_from_slice(&invocation.nonce.to_le_bytes());

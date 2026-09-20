@@ -23,9 +23,11 @@ pub struct CapabilityStore {
 
 impl CapabilityStore {
     pub fn new(genesis: GenesisRoot) -> Self {
+        let mut capabilities = HashMap::new();
+        capabilities.insert(genesis.capability.identity_hash(), genesis.capability.clone());
         Self {
             genesis,
-            capabilities: HashMap::new(),
+            capabilities,
             tombstones: HashMap::new(),
         }
     }

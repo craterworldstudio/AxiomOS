@@ -18,24 +18,22 @@ struct TestEnvironment {
     pub store: CapabilityStore,
     pub consumed_nonces: HashSet<([u8; 32], u64)>,
     pub current_epoch: u64,
-    pub genesis_key: SigningKey,
     pub hardware_root_key: SigningKey,
 }
 
 impl TestEnvironment {
     fn new(object_id: [u8; 32], genesis_authority: u64) -> Self {
         let mut csprng = OsRng;
-        let genesis_key = SigningKey::generate(&mut csprng);
         let hardware_root_key = SigningKey::generate(&mut csprng);
 
         // Construct the Silicon Root Capability
-        let mut genesis_cap = Capability {
+        let genesis_cap = Capability {
             target_object: object_id,
             authority_mask: genesis_authority,
             parent_hash: GENESIS_HASH,
             membrane: None,
             epoch_issued: 0,
-            owner_key: genesis_key.verifying_key(),
+            owner_key: hardware_root_key.verifying_key(),
             issuer_signature: ed25519_dalek::Signature::from_bytes(&[0u8; 64]), // placeholder for hash
         };
 
@@ -53,17 +51,19 @@ impl TestEnvironment {
             store: CapabilityStore::new(genesis_root),
             consumed_nonces: HashSet::new(),
             current_epoch: 1,
-            genesis_key,
             hardware_root_key,
         }
     }
 
     fn run_validator(&mut self, invocation: &Invocation) -> ValidationResult {
+        
+        let hroot_key_verified = &self.hardware_root_key.verifying_key();
+        
         let mut validator = Validator::new(
             &self.store,
             self.current_epoch,
             &mut self.consumed_nonces,
-            &self.hardware_root_key.verifying_key(),
+            &hroot_key_verified,
         );
 
         validator.validate(invocation)
@@ -122,31 +122,6 @@ fn test_01_valid_genesis_to_child_delegation() {
 
     let child_signer = SigningKey::generate(&mut csprng);
     let genesis_hash = env.store.genesis.capability.identity_hash();
-    // --------------------------------------------------
-    // Genesis capability
-    // --------------------------------------------------
-
-    let genesis = make_capability(
-        object_id,
-        AUTH_READ,
-        GENESIS_HASH,
-        0,
-        child_signer.verifying_key(),
-        &env.genesis_key,
-    );
-
-    let genesis_hash = env.store.inject_for_test(genesis);
-
-    // --------------------------------------------------
-    // Child capability
-    //
-    // Parent: READ | WRITE
-    // Child:  READ
-    //
-    // Therefore:
-    //
-    // READ ⊆ READ | WRITE
-    // --------------------------------------------------
 
     let child = make_capability(
         object_id,
@@ -154,13 +129,10 @@ fn test_01_valid_genesis_to_child_delegation() {
         genesis_hash,
         1,
         child_signer.verifying_key(),
+        &env.hardware_root_key,
     );
 
     let child_hash = env.store.inject_for_test(child);
-
-    // --------------------------------------------------
-    // Invocation
-    // --------------------------------------------------
 
     let invocation = Invocation {
         capability: CapabilityRef {
@@ -190,22 +162,13 @@ fn test_03_authority_escalation_is_rejected() {
     let child_signer = SigningKey::generate(&mut csprng);
     let genesis_hash = env.store.genesis.capability.identity_hash();
 
-    // --------------------------------------------------
-    // Malicious child
-    //
-    // Parent = READ
-    // Child  = READ | WRITE
-    //
-    // This violates monotonic attenuation.
-    // --------------------------------------------------
-
     let malicious_child = make_capability(
         object_id,
         AUTH_READ | AUTH_WRITE,
         genesis_hash,
         1,
         child_signer.verifying_key(),
-        &env.genesis_key,
+        &env.hardware_root_key,
     );
 
     let child_hash = env.store.inject_for_test(malicious_child);
@@ -248,7 +211,7 @@ fn test_04_invalid_signature_is_rejected() {
         genesis_hash,
         1,
         child_signer.verifying_key(),
-        &env.genesis_key,
+        &env.hardware_root_key,
     );
     let child_hash = env.store.inject_for_test(child);
 
@@ -318,7 +281,7 @@ fn test_06_tampered_capability_is_rejected() {
         genesis_hash,
         1,
         child_signer.verifying_key(),
-        &env.genesis_key,
+        &env.hardware_root_key,
     );
     
     let original_hash = child.identity_hash();
@@ -355,7 +318,7 @@ fn test_07_tampered_genesis_is_rejected() {
         original_genesis_hash,
         1,
         child_signer.verifying_key(),
-        &env.genesis_key,
+        &env.hardware_root_key,
     );
     let child_hash = env.store.inject_for_test(child);
 
@@ -390,7 +353,7 @@ fn test_08_wrong_hardware_root_is_rejected() {
         genesis_hash,
         1,
         child_signer.verifying_key(),
-        &env.genesis_key,
+        &env.hardware_root_key,
     );
     let child_hash = env.store.inject_for_test(child);
 
@@ -403,11 +366,13 @@ fn test_08_wrong_hardware_root_is_rejected() {
 
     // The validator boots with a different Hardware Root than the one that signed Genesis
     let fake_hardware_root = SigningKey::generate(&mut csprng);
+    let fake_hw_pubkey = fake_hardware_root.verifying_key();
+
     let mut validator = Validator::new(
         &env.store,
         env.current_epoch,
         &mut env.consumed_nonces,
-        &fake_hardware_root.verifying_key() // DIFFERENT ROOT
+        &fake_hw_pubkey, // DIFFERENT ROOT
     );
 
     assert_eq!(
@@ -432,7 +397,7 @@ fn test_09_unknown_parent_is_rejected() {
         fake_parent_hash,
         1,
         child_signer.verifying_key(),
-        &env.genesis_key,
+        &env.hardware_root_key,
     );
     let child_hash = env.store.inject_for_test(child);
 
