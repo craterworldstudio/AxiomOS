@@ -55,15 +55,34 @@ Axiom boots via a legacy BIOS fallback process designed for maximum control and 
 - [x] BIOS boot sector executes and prints confirmation.
 
 ### The Hardware Escalation
-- [ ] Stage 1 reads Stage 2 from disk.
-- [ ] Stage 2 reads kernel into a low-memory staging area.
-- [ ] Enter 32-bit Protected Mode.
-- [ ] Establish 4-level identity page tables.
-- [ ] Enter 64-bit Long Mode.
-- [ ] Relocate kernel to `0x100000` and establish the 64-bit stack.
-- [ ] Execute Long Jump to Rust kernel `_start`.
-- [ ] Rust kernel seizes the VGA buffer and prints confirmation.
+- [x] Stage 1 reads Stage 2 from disk.
+- [x] Stage 2 reads kernel into a low-memory staging area.
+- [x] Enter 32-bit Protected Mode.
+- [x] Establish 4-level identity page tables.
+- [x] Enter 64-bit Long Mode.
+- [x] Relocate kernel to `0x100000` and establish the 64-bit stack.
+- [x] Execute Long Jump to Rust kernel `_start`.
+- [x] Rust kernel seizes the VGA buffer and prints confirmation.
 
 ### Kernel Foundations
 - [ ] Establish physical memory model (Frame Allocator).
 - [ ] Establish CPU exception handlers and Interrupt Descriptor Table (IDT).
+
+## 5. Physical Memory Map
+Axiom 1 establishes the following absolute physical memory layout before handing control to the Rust kernel. There is strictly no overlap between these regions.
+
+| Physical Address | Size / Notes | Content |
+| :--- | :--- | :--- |
+| `0x00007C00` | 512 B | Stage 1 Boot Sector |
+| `0x00007E00` | 4 KiB | Stage 2 Environment Builder |
+| `0x00009000` | 4 KiB | PML4 (Page Map Level 4) |
+| `0x0000A000` | 4 KiB | PDPT (Page Directory Pointer Table) |
+| `0x0000B000` | 4 KiB | PD (Page Directory) |
+| `0x00010000` | ~2.5 KiB | Kernel Staging Area (Temporary) |
+| `0x00090000` | Grows down | Initial Bootstrap Stack Top |
+| `0x000B8000` | 4 KiB | VGA Hardware Buffer |
+| `0x00100000` | Variable | Axiom Rust Kernel (Linked Address) |
+
+## 6. ABIs and Known Limitations
+* **Stage 1 → Stage 2 ABI:** Stage 1 guarantees that the BIOS boot drive number is preserved in the `DL` register upon jumping to Stage 2. Stage 2 must immediately save this to memory.
+* **Kernel Payload Size:** The Stage 2 loader currently hardcodes the kernel disk read and memory relocation to exactly 5 sectors (2560 bytes). If the Rust flat binary exceeds this size, the bootloader must be updated, or silent truncation will occur.

@@ -3,7 +3,7 @@
 
 use core::panic::PanicInfo;
 
-static HELLO: &[u8] = b"AXIOM KERNEL ONLINE";
+static HELLO: &[u8] = b"AXIOM KERNEL ONLINE - by Soulfire";
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
