@@ -4,9 +4,53 @@
 start:
     ; Stage 1 jumped here. DL still contains the boot drive.
     mov [BOOT_DRIVE], dl
+
+    xor ax, ax
+    mov es, ax
+
+    ; Build BootInfo & E820 Map at 0x6000
+    mov di, 0x6020          ; Start E820 buffer at 0x6020
+    xor ebx, ebx            ; Continuation value
+    xor ebp, ebp            ; Entry counter
+
+.get_e820:
+    mov edx, 0x534D4150     ; "SMAP"
+    mov eax, 0xE820
+    mov ecx, 24             ; Request 24-byte entries
+    mov dword [es:di + 20], 1 ; Force valid ACPI 3.0 attribute
+    int 0x15
+    jc .e820_done
+    cmp eax, 0x534D4150
+    jne .e820_error
+    jcxz .e820_next
+    
+    add di, 24
+    inc ebp
+
+.e820_next:
+    test ebx, ebx
+    jz .e820_done
+    jmp .get_e820
+
+.e820_error:
+    mov si, err_e820
+    jmp print_error
+
+.e820_done:
+    ; Write the BootInfo C-struct at 0x6000
+    mov dword [0x6000], 0xC0DEB007  ; magic
+    mov dword [0x6004], 1           ; version
+    mov dword [0x6008], 0x6020      ; memory_map_ptr (low)
+    mov dword [0x600C], 0           ; memory_map_ptr (high)
+    mov [0x6010], ebp               ; memory_map_len (low)
+    mov dword [0x6014], 0           ; memory_map_len (high)
+    mov dword [0x6018], 24          ; memory_map_entry_size (low)
+    mov dword [0x601C], 0           ; memory_map_entry_size (high)
     
     mov si, stage2_msg
     jmp print_stage2
+
+
 
 print_stage2:
     lodsb
@@ -71,6 +115,7 @@ halt:
     jmp halt
 
 err_msg db "Kernel Disk Error", 13, 10, 0
+err_e820   db "E820 Mem Map Error", 13, 10, 0
 stage2_msg db "Axiom Stage 2 Online", 13, 10, 0
 BOOT_DRIVE db 0
 
@@ -280,6 +325,8 @@ long_mode_entry:
     call delay64
 
     ; 3. Jump to the Rust Kernel
+    ; System V ABI: Pass BootInfo physical pointer in RDI
+    mov rdi, 0x6000
     jmp 0x100000
 
 long_mode_halt:
