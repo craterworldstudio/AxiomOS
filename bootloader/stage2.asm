@@ -352,7 +352,7 @@ clear_screen:
 delay:
     push eax
     push ecx
-    mov ecx, 0x000FFFFF     ; Tweak this hex value to make the cascade faster or slower
+    mov ecx, 0x0000001     ; Tweak this hex value to make the cascade faster or slower, set to 0x000FFFFF for a slow startup
 
 .loop:
     pause
@@ -396,7 +396,7 @@ vga_print:
 delay64:
     push rax
     push rcx
-    mov rcx, 0x000FFFFF     ; Same delay loop for 64-bit mode
+    mov rcx, 0x0000001     ; Same delay loop for 64-bit mode. Set to 0x000FFFFF for a dramatic startup
 
 .loop64:
     pause
