@@ -63,18 +63,11 @@ print_stage2:
 load_kernel:
 
     ; 1. Load the Kernel payload into staging memory
-    ; The kernel starts at Sector 10 (Stage 1 = 1 sector, Stage 2 = 8 sectors)
+    ; The kernel starts at Sector 10 (Stage 1 = 1 sector, Stage 2 = 32 sectors)
 
     mov dl, [BOOT_DRIVE]
-
-    mov ah, 0x02
-    mov al, 5               ; Read 5 sectors 
-    mov ch, 0               ; Cylinder 0
-    mov dh, 0               ; Head 0
-    mov cl, 10               ; Start reading at Sector 6
-    mov bx, 0x1000          ; Load to Segment 0x1000 (0x1000:0x0000 = physical 0x10000)
-    mov es, bx
-    xor bx, bx              ; Offset 0
+    mov ah, 0x42            ; Extended Read Sectors (LBA)
+    mov si, dap_kernel      ; Point DS:SI to the Disk Address Packet
     int 0x13
     jc disk_error
 
@@ -118,6 +111,15 @@ err_msg db "Kernel Disk Error", 13, 10, 0
 err_e820   db "E820 Mem Map Error", 13, 10, 0
 stage2_msg db "Axiom Stage 2 Online", 13, 10, 0
 BOOT_DRIVE db 0
+
+; Disk Address Packet for loading the kernel
+dap_kernel:
+    db 0x10                 ; Size of DAP (16 bytes)
+    db 0                    ; Unused
+    dw 32                   ; Number of sectors to read (16 KiB)
+    dw 0x0000               ; Target offset
+    dw 0x1000               ; Target segment (0x1000:0x0000 = physical 0x10000)
+    dq 9                    ; Start LBA (Sector 10 is LBA 9)
 
 ; ==========================================
 ; Global Descriptor Table (GDT)
@@ -311,7 +313,7 @@ long_mode_entry:
     cld                     ; Clear direction flag
     mov rsi, 0x10000        ; Source
     mov rdi, 0x100000       ; Destination
-    mov rcx, 2560           ; Copy 5 sectors (2560 bytes)
+    mov rcx, 16384          ; Copy 32 sectors (16KiB)
     rep movsb               
 
     mov rsi, msg_copy

@@ -20,6 +20,7 @@ pub struct MemoryMapEntry {
     pub acpi_extended_attributes: u32,
 }
 
+#[allow(dead_code)]
 static HELLO: &[u8] = b"AXIOM KERNEL ONLINE - by Soulfire";
 
 #[no_mangle]
@@ -34,7 +35,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     let message = if is_valid {
         b"AXIOM KERNEL ONLINE [BOOT INFO VERIFIED]"
     } else {
-        b"AXIOM KERNEL ONLINE [BOOT INFO FAILED]"
+        b"AXIOM KERNEL ONLINE [BOOT INFO FAILED]  "
     };
 
     // 2. Print the status to the top of the VGA buffer

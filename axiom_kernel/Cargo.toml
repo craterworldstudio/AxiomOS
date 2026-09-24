@@ -7,4 +7,3 @@ description = "Axiom OS Bare-Metal Substrate"
 
 [dependencies]
 # Currently empty. We rely on nothing but core.
-

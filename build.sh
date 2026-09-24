@@ -1,10 +1,5 @@
-cargo build -p axiom_kernel --target x86_64-unknown-none
-
-
-cargo objcopy -p axiom_kernel --target x86_64-unknown-none -- \
-    -O binary \
-    target/x86_64-unknown-none/debug/axiom_kernel.bin
-    
+#!/bin/bash
+set -e
 
 echo "[BUILD] Assembling Stage 1..."
 nasm -f bin bootloader/boot.asm -o bootloader/boot.bin
@@ -22,15 +17,20 @@ if [ "$STAGE2_SIZE" -ne 4096 ]; then
     exit 1
 fi
 
-cat bootloader/boot.bin \
-    bootloader/stage2.bin \
-    target/x86_64-unknown-none/debug/axiom_kernel.bin \
-    > target/disk.img
-#cat bootloader/boot.bin target/x86_64-unknown-none/debug/axiom_kernel.bin > target/disk.img
+echo "[BUILD] Compiling Rust Kernel..."
+cargo build -p axiom_kernel
+
+echo "[BUILD] Flattening Kernel Binary..."
+#rust-objcopy --strip-all -O binary target/x86_64-unknown-none/debug/axiom_kernel target/x86_64-unknown-none/debug/axiom_kernel.bin
+objcopy -O binary target/x86_64-unknown-none/debug/axiom_kernel target/x86_64-unknown-none/debug/axiom_kernel.bin
+
+echo "[BUILD] Forging unified disk image..."
+cat bootloader/boot.bin bootloader/stage2.bin target/x86_64-unknown-none/debug/axiom_kernel.bin > target/disk.img
+
+echo "[BUILD] Padding disk image to prevent EOF read errors..."
+dd if=/dev/zero bs=512 count=64 >> target/disk.img 2>/dev/null
 
 echo "[OK] Axiom Image forged successfully."
 
 echo "[RUN] Starting AxiomOS."
-#qemu-system-x86_64 -drive format=raw,file=bootloader/boot.bin
 qemu-system-x86_64 -drive format=raw,file=target/disk.img
-
