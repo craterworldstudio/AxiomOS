@@ -398,12 +398,3 @@ AxSH
 The allocator is therefore the foundation for Axiom's future memory-management system, but it is not yet the complete memory manager.
 
 ```
-
-### One tiny correction to keep in mind
-
-The previous docs say Stage 2 is at `0x7E00`, page tables at `0x9000`, etc. This new document deliberately describes **ownership conceptually** rather than pretending every byte in the lower MiB is actually occupied.
-
-And I'd keep the redundant VGA reservation out of the conceptual description because the `[0, 1 MiB)` quarantine already covers it.
-
-**After this doc is committed, I would move on to the IDT.** That's the point where kernel crashes stop being completely opaque triple-fault disasters and start becoming useful diagnostic events.
-```
