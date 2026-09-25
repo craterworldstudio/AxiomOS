@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+mod interrupts;
+mod gdt;
+
 use core::panic::PanicInfo;
 
 #[repr(C)]
@@ -71,12 +74,43 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             *vga_buffer.add(offset + 3) = 0x0E;
         }
 
-        // --- ALLOCATOR TEST ---
-        let mut allocator = unsafe { FrameAllocator::new(boot_info) };
+        // --- SUBSYSTEM INITIALIZATION ---
+        gdt::init();
+        interrupts::init();
         
-        if let Some(f1) = allocator.allocate_frame() { print_hex_64(f1.start_address, 160, vga_buffer); }
-        if let Some(f2) = allocator.allocate_frame() { print_hex_64(f2.start_address, 320, vga_buffer); }
-        if let Some(f3) = allocator.allocate_frame() { print_hex_64(f3.start_address, 480, vga_buffer); }
+        //unsafe { core::arch::asm!("int3"); } // Manually trigger a CPU Breakpoint exception
+        //unsafe { core::arch::asm!("ud2"); } // Manually Trigger a CPU Kernal Panic
+
+
+
+
+
+
+        // --- CLEANUP ---
+        // Clear the screen to black before we do anything dangerous
+        for i in 0..2000 {
+            unsafe {
+                *vga_buffer.add(i * 2) = b' ';
+                *vga_buffer.add(i * 2 + 1) = 0x0F;
+            }
+        }
+
+        // --- IST TEST: STACK OVERFLOW ---
+        // This recursive function will exhaust the stack.
+        // If our IST is wired correctly, the Double Fault handler 
+        // will catch it using the emergency stack.
+        #[allow(unconditional_recursion)]
+        fn provoke_double_fault() {
+            // Force the compiler to use stack space
+            volatile_write(0);
+            provoke_double_fault();
+        }
+
+        fn volatile_write(val: u64) {
+            unsafe { core::ptr::write_volatile(0xB8000 as *mut u64, val); }
+        }
+
+        provoke_double_fault();
     }
 
     loop {}
@@ -202,7 +236,7 @@ impl FrameAllocator {
     
 }
 
-fn print_hex_64(val: u64, offset: isize, vga: *mut u8) {
+pub fn print_hex_64(val: u64, offset: isize, vga: *mut u8) {
         let hex_chars = b"0123456789ABCDEF";
         for i in 0..16 {
             let nibble = (val >> (60 - i * 4)) & 0x0F;

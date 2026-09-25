@@ -350,6 +350,23 @@ These limitations are intentional for Axiom 1.
 * [x] Verified consecutive frame allocation
 * [x] Verified kernel region is skipped
 * [x] Verified lower 1 MiB is skipped
+* [x] E820 physical memory discovery
+* [x] BootInfo ABI
+* [x] BootInfo → Rust handoff
+* [x] Physical frame allocator
+* [x] Reserved memory protection
+* [x] 256-entry IDT
+* [x] IDTR loading
+* [x] IDT gate construction
+* [x] CPU → assembly exception entry
+* [x] Assembly → Rust transition
+* [x] Rust → assembly return
+* [x] IRETQ
+* [x] Breakpoint exception (#3)
+* [x] Assembly entry/return
+* [x] Ring-0 exception frame
+* [x] Panic renderer
+* [x] #8 Double Fault vector
 * [ ] Frame deallocation
 * [ ] Dynamic kernel boundaries
 * [ ] Physical frame accounting
@@ -358,6 +375,8 @@ These limitations are intentional for Axiom 1.
 * [ ] Kernel heap
 * [ ] IDT
 * [ ] CPU exception handlers
+
+
 
 ---
 
