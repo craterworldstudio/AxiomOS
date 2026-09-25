@@ -22,9 +22,14 @@ SECTIONS
 
     .bss : ALIGN(16)
     {
+        BSS_START = .;
         *(COMMON)
         *(.bss .bss.*)
+        BSS_END = .;
     }
+
+    /* Export the kernel end symbol */
+    KERNEL_END = .;
 
     /DISCARD/ :
     {

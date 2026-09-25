@@ -350,11 +350,6 @@ These limitations are intentional for Axiom 1.
 * [x] Verified consecutive frame allocation
 * [x] Verified kernel region is skipped
 * [x] Verified lower 1 MiB is skipped
-* [x] E820 physical memory discovery
-* [x] BootInfo ABI
-* [x] BootInfo → Rust handoff
-* [x] Physical frame allocator
-* [x] Reserved memory protection
 * [x] 256-entry IDT
 * [x] IDTR loading
 * [x] IDT gate construction
@@ -367,14 +362,24 @@ These limitations are intentional for Axiom 1.
 * [x] Ring-0 exception frame
 * [x] Panic renderer
 * [x] #8 Double Fault vector
+* [x] Kernel-owned GDT
+* [x] Kernel code/data segment descriptors
+* [x] Task State Segment (TSS)
+* [x] Emergency Double Fault stack
+* [x] LGDT
+* [x] Kernel code-segment reload
+* [x] LTR
+* [x] Double Fault IST assignment
+* [x] IDT
+* [x] CPU exception entry stubs
+* [x] CPU exception handlers
 * [ ] Frame deallocation
 * [ ] Dynamic kernel boundaries
 * [ ] Physical frame accounting
 * [ ] Full physical-memory ownership model
 * [ ] Virtual memory manager
 * [ ] Kernel heap
-* [ ] IDT
-* [ ] CPU exception handlers
+
 
 
 
@@ -382,11 +387,11 @@ These limitations are intentional for Axiom 1.
 
 ## 13. Next Step
 
-The physical frame allocator gives Axiom its first real mechanism for safely claiming physical resources.
+The physical frame allocator and exception subsystem now provide the basic safety mechanisms required for Axiom's next memory-management layer.
 
-The next kernel foundation is the:
+The next major subsystem is:
 
-**Interrupt Descriptor Table (IDT) and CPU exception subsystem.**
+**Virtual Memory**
 
 The intended progression is:
 
@@ -398,6 +403,8 @@ BootInfo
 Physical Frame Allocator
   ↓
 IDT + Exceptions
+  ↓
+Kernel GDT + TSS + IST
   ↓
 Virtual Memory
   ↓
@@ -412,8 +419,15 @@ Capability Kernel
 VGOS
   ↓
 AxSH
-```
 
-The allocator is therefore the foundation for Axiom's future memory-management system, but it is not yet the complete memory manager.
+Virtual memory will replace the bootloader's temporary 2 MiB identity mapping with an Axiom-owned paging architecture.
 
-```
+This will allow Axiom to:
+* Establish its own page-table hierarchy.
+* Map physical frames into controlled virtual addresses.
+* Protect kernel and allocator metadata from accidental access.
+* Establish a dedicated kernel stack with a guard page.
+* Provide the foundation required for a real kernel heap.
+* Eventually support isolated address spaces for processes and capability-owned objects.
+
+The current bootloader page tables remain a temporary bootstrap mechanism and should not be treated as part of Axiom's final virtual-memory architecture.

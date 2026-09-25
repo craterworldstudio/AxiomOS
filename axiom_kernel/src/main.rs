@@ -3,37 +3,43 @@
 
 mod interrupts;
 mod gdt;
+mod memory;
 
 use core::panic::PanicInfo;
-
-#[repr(C)]
-pub struct BootInfo {
-    pub magic: u32,
-    pub version: u32,
-    pub memory_map_ptr: u64,
-    pub memory_map_len: u64,
-    pub memory_map_entry_size: u64,
-}
-
-#[repr(C)]
-pub struct MemoryMapEntry {
-    pub base: u64,
-    pub length: u64,
-    pub region_type: u32,
-    pub acpi_extended_attributes: u32,
-}
+use memory::BootInfo;
 
 #[allow(dead_code)]
 static HELLO: &[u8] = b"AXIOM KERNEL ONLINE - by Soulfire";
 
 #[no_mangle]
 pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
+    unsafe {
+        extern "C" {
+            static BSS_START: u8;
+            static BSS_END: u8;
+        }
+        let start = core::ptr::addr_of!(BSS_START) as *mut u8;
+        let end = core::ptr::addr_of!(BSS_END) as *mut u8;
+        let len = end as usize - start as usize;
+        core::ptr::write_bytes(start, 0, len);
+    }
+
     let vga_buffer = 0xB8000 as *mut u8;
+
+    // 1. Clear the entire screen to black
+    for i in 0..2000 {
+        unsafe {
+            *vga_buffer.add(i * 2) = b' ';
+            *vga_buffer.add(i * 2 + 1) = 0x0F;
+        }
+    }
 
     // 1. Validate the physical pointer and magic number
     let is_valid = unsafe {
         !boot_info.is_null() && (*boot_info).magic == 0xC0DEB007
     };
+
+    
 
     let message = if is_valid {
         b"AXIOM KERNEL ONLINE [BOOT INFO VERIFIED]"
@@ -50,7 +56,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         offset += 2;
     }
-
+    
+    //print_hex_64(is_valid as u64, 160 * 12, vga_buffer);
     // 3. If valid, prove it by printing the memory map entry count
     if is_valid {
         let count = unsafe { (*boot_info).memory_map_len };
@@ -76,7 +83,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         // --- SUBSYSTEM INITIALIZATION ---
         gdt::init();
+
+        let vga = 0xB8000 as *mut u8;
+
         interrupts::init();
+
+
+
         
         //unsafe { core::arch::asm!("int3"); } // Manually trigger a CPU Breakpoint exception
         //unsafe { core::arch::asm!("ud2"); } // Manually Trigger a CPU Kernal Panic
@@ -84,156 +97,51 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
 
 
+        
+        // --- ALLOCATION & DEALLOCATION TEST ---
+        let boot_allocator = unsafe { memory::FrameAllocator::new(boot_info) };
+        let mut bitmap_alloc = unsafe { memory::BitmapAllocator::bootstrap(boot_allocator) };
 
+        // 1. Allocate a frame. This should grab frame 512 (0x200000).
+        let frame1 = bitmap_alloc.allocate_frame().unwrap();
+        print_hex_64(frame1.start_address, 160, vga_buffer); // Row 1
 
-        // --- CLEANUP ---
-        // Clear the screen to black before we do anything dangerous
-        for i in 0..2000 {
-            unsafe {
-                *vga_buffer.add(i * 2) = b' ';
-                *vga_buffer.add(i * 2 + 1) = 0x0F;
-            }
-        }
+        // 2. Allocate another frame. This should grab frame 513 (0x201000).
+        let frame2 = bitmap_alloc.allocate_frame().unwrap();
+        print_hex_64(frame2.start_address, 320, vga_buffer); // Row 2
 
-        // --- IST TEST: STACK OVERFLOW ---
-        // This recursive function will exhaust the stack.
-        // If our IST is wired correctly, the Double Fault handler 
-        // will catch it using the emergency stack.
-        #[allow(unconditional_recursion)]
-        fn provoke_double_fault() {
-            // Force the compiler to use stack space
-            volatile_write(0);
-            provoke_double_fault();
-        }
+        // 3. Deallocate the FIRST frame (0x200000).
+        bitmap_alloc.deallocate_frame(frame1);
 
-        fn volatile_write(val: u64) {
-            unsafe { core::ptr::write_volatile(0xB8000 as *mut u64, val); }
-        }
-
-        provoke_double_fault();
+        // 4. Allocate a third frame. 
+        // A bump allocator would give 0x202000. 
+        // Our true allocator should reuse the newly freed 0x200000!
+        let frame3 = bitmap_alloc.allocate_frame().unwrap();
+        print_hex_64(frame3.start_address, 480, vga_buffer); // Row 3
     }
 
-    loop {}
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
 }
 
 /// This function is called on kernel panic.
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
-
-// ==========================================
-// Memory Management Subsystem
-// ==========================================
-
-pub const PAGE_SIZE: u64 = 4096;
-
-#[derive(Debug, Clone, Copy)]
-pub struct PhysFrame {
-    pub start_address: u64,
-}
-
-struct ReservedRegion {
-    start: u64,
-    end: u64,
-}
-
-// Axiom 1 Boot Reservations based on our physical memory map
-const RESERVED_REGIONS: [ReservedRegion; 3] = [
-
-    // 1. Lower Memory Quarantine (IVT, BDA, Bootloader, Page Tables, Stack)
-    // Completely locks down physical memory from 0x0 to the stack top.
-    ReservedRegion {
-        start: 0x00000000,
-        end: 0x00100000,
-    },
-
-    // 2. VGA Hardware Buffer (Now technically redundant, but safe to keep)
-    ReservedRegion {
-        start: 0x000B8000,
-        end: 0x000B9000,
-    },
-
-    // 3. Axiom Kernel Image 
-    // Safely reserving the entire 1 MiB block from 0x100000 to 0x1FFFFF
-    ReservedRegion {
-        start: 0x00100000,
-        end: 0x00200000,
-    },
-];
-
-pub struct FrameAllocator {
-    boot_info: *const BootInfo,
-    current_entry_index: usize,
-    next_free_address: u64,
-}
-
-impl FrameAllocator {
-    pub unsafe fn new(boot_info: *const BootInfo) -> Self {
-        FrameAllocator {
-            boot_info,
-            current_entry_index: 0,
-            next_free_address: 0,
+    let vga = 0xB8000 as *mut u8;
+    let panic_msg = b" FATAL RUST PANIC: UNWRAP FAILED ";
+    
+    // Print a loud Red warning to the top left of the screen
+    for (i, &byte) in panic_msg.iter().enumerate() {
+        unsafe {
+            *vga.add(i * 2) = byte;
+            *vga.add(i * 2 + 1) = 0x4F; // White text on Red background
         }
-    }
-
-    fn is_reserved(address: u64) -> bool {
-        for region in RESERVED_REGIONS.iter() {
-            if address >= region.start && address < region.end {
-                return true;
-            }
-        }
-        false
     }
     
-    pub fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        let entry_count = unsafe { (*self.boot_info).memory_map_len } as usize;
-        let map_ptr = unsafe { (*self.boot_info).memory_map_ptr } as *const MemoryMapEntry;
-
-        while self.current_entry_index < entry_count {
-            let entry = unsafe { &*map_ptr.add(self.current_entry_index) };
-
-            // E820 Type 1 is "Usable RAM"
-            if entry.region_type != 1 {
-                self.current_entry_index += 1;
-                self.next_free_address = 0;
-                continue;
-            }
-
-            // Initialize our search address for this region
-            if self.next_free_address == 0 {
-                self.next_free_address = entry.base;
-            }
-
-            // Align address up to the next 4 KiB boundary
-            let mut addr = self.next_free_address;
-            let remainder = addr % PAGE_SIZE;
-            if remainder != 0 {
-                addr += PAGE_SIZE - remainder;
-            }
-
-            let region_end = entry.base + entry.length;
-
-            // Search for the next unreserved frame in this region
-            while addr + PAGE_SIZE <= region_end {
-                let candidate = addr;
-                addr += PAGE_SIZE;
-                self.next_free_address = addr; // Save state for next call
-
-                if !Self::is_reserved(candidate) {
-                    return Some(PhysFrame { start_address: candidate });
-                }
-            }
-
-            // Region exhausted, move to the next E820 entry
-            self.current_entry_index += 1;
-            self.next_free_address = 0;
-        }
-
-        None // Out of physical memory
+    loop {
+        unsafe { core::arch::asm!("cli; hlt"); }
     }
-
-    
 }
 
 pub fn print_hex_64(val: u64, offset: isize, vga: *mut u8) {

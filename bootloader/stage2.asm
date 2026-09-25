@@ -6,7 +6,9 @@ start:
     mov [BOOT_DRIVE], dl
 
     xor ax, ax
+    mov ds, ax
     mov es, ax
+    mov ss, ax
 
     ; Build BootInfo & E820 Map at 0x6000
     mov di, 0x6020          ; Start E820 buffer at 0x6020
@@ -116,7 +118,7 @@ BOOT_DRIVE db 0
 dap_kernel:
     db 0x10                 ; Size of DAP (16 bytes)
     db 0                    ; Unused
-    dw 32                   ; Number of sectors to read (16 KiB)
+    dw 64                  ; Number of sectors to read (64 KiB)
     dw 0x0000               ; Target offset
     dw 0x1000               ; Target segment (0x1000:0x0000 = physical 0x10000)
     dq 9                    ; Start LBA (Sector 10 is LBA 9)
@@ -182,7 +184,7 @@ init_pm:
 
     ; Print retroactive 16-bit status starting at Row 8 
     mov esi, msg_header
-    mov edi, 1280           
+    mov edi, 640           
     call vga_print
     call delay
 
@@ -313,7 +315,7 @@ long_mode_entry:
     cld                     ; Clear direction flag
     mov rsi, 0x10000        ; Source
     mov rdi, 0x100000       ; Destination
-    mov rcx, 16384          ; Copy 32 sectors (16KiB)
+    mov rcx, 32768          ; Copy 64 sectors (64KiB)
     rep movsb               
 
     mov rsi, msg_copy

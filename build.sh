@@ -29,6 +29,7 @@ cat bootloader/boot.bin bootloader/stage2.bin target/x86_64-unknown-none/debug/a
 
 echo "[BUILD] Padding disk image to prevent EOF read errors..."
 dd if=/dev/zero bs=512 count=64 >> target/disk.img 2>/dev/null
+#dd if=target/disk.img bs=512 skip=9 count=128 of=/dev/null status=none && echo "128 sectors readable"
 
 echo "[OK] Axiom Image forged successfully."
 

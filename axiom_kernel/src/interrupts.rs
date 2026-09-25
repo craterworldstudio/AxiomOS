@@ -48,18 +48,18 @@ static mut IDTR: IdtDescriptor = IdtDescriptor { limit: 0, base: 0 };
 
 pub fn init() {
     unsafe {
-        // Wire Vector 3 (Breakpoint) to our assembly stub
+        asm!("cli");
+
         IDT[3].set_handler(breakpoint_stub as *const () as u64);
-        // Wire Vector 8 (Double Fault)
+
         IDT[8].set_handler(double_fault_stub as *const () as u64);
-        // Instruct the CPU to switch to IST Index 1 (0-indexed as 0 in our code)
+
         IDT[8].ist = crate::gdt::DOUBLE_FAULT_IST_INDEX as u8 + 1;
 
-        // Calculate the table limit (size in bytes - 1)
         IDTR.limit = (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16;
         IDTR.base = (&raw const IDT) as *const IdtEntry as u64;
 
-        // Tell the CPU where to find our table
+
         asm!(
             "lidt [{}]",
             in(reg) (&raw const IDTR),
@@ -69,7 +69,6 @@ pub fn init() {
 
     }
 }
-
 
 
 
@@ -181,4 +180,38 @@ global_asm!(
 #[no_mangle]
 pub extern "C" fn double_fault_handler(frame: &ExceptionStackFrame, error_code: u64) {
     kernel_panic("DOUBLE FAULT (#8)   ", error_code, frame, 0);
+}
+
+global_asm!(
+    ".global ist_test_stub",
+    "ist_test_stub:",
+    // A software 'int 8' does NOT push an error code.
+    // RSP currently points to the hardware frame (RIP, CS, RFLAGS).
+    
+    // Move RSP into RDI so our Rust handler receives the stack pointer as an argument
+    "mov rdi, rsp",
+    
+    "call ist_test_handler",
+    "iretq"
+);
+
+extern "C" {
+    fn ist_test_stub();
+}
+
+#[no_mangle]
+pub extern "C" fn ist_test_handler(rsp: u64) {
+    let vga = 0xB8000 as *mut u8;
+    let msg = b"[ IST RSP ]";
+    
+    // Print "[ IST RSP ]" in Green
+    for (i, &byte) in msg.iter().enumerate() {
+        unsafe {
+            *vga.add(320 + i * 2) = byte;
+            *vga.add(320 + i * 2 + 1) = 0x0A; 
+        }
+    }
+    
+    // Print the raw stack pointer address right after it (Offset 344)
+    crate::print_hex_64(rsp, 344, vga);
 }
