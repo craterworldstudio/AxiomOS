@@ -1,0 +1,91 @@
+# ADR-0002 — `INVOKE` is the Primary Kernel ABI
+
+## Status
+
+Accepted
+
+## Context
+
+Traditional monolithic kernels expose a large syscall interface containing operations such as `read`, `write`, `fork`, `mmap`, and networking primitives.
+
+These interfaces require the kernel to understand high-level userspace concepts such as files, processes, sockets, and users.
+
+Axiom instead requires the kernel to remain a minimal authority and isolation substrate.
+
+## Decision
+
+The kernel will not provide a traditional POSIX syscall ABI.
+
+The primary mechanism by which userspace requests kernel action is:
+
+```text
+INVOKE(capability_handle, operation, arguments)
+```
+
+IPC between execution contexts is also capability-mediated.
+
+The capability supplied to `INVOKE` determines what authority the caller possesses. The requested operation determines what action is being attempted, and the arguments provide its operation-specific data.
+
+## Invariants
+
+* Authority is derived from possession of a valid capability.
+* Authority is never derived from execution identity such as UID 0 or a privileged process flag.
+* Every kernel operation requested by userspace is capability-mediated.
+* Userspace cannot directly access kernel object pointers.
+* Kernel services are not exposed through a POSIX syscall zoo.
+* The exact set of operations is determined by the kernel object being invoked.
+
+## Consequences
+
+### Easier
+
+* Distro neutrality.
+* Small and auditable kernel interface.
+* Capability-based authority throughout the system.
+* POSIX compatibility can exist entirely in userspace.
+* Different operating-system personalities can share the same kernel.
+
+### Harder
+
+* Bootstrapping userspace becomes more involved.
+* Standard services such as filesystems and networking must be constructed through IPC.
+* Kernel ABI design becomes more important because userspace depends directly on capability semantics.
+
+## Alternatives Considered
+
+### POSIX Syscall Interface
+
+Rejected as the primary Axiom ABI.
+
+A POSIX interface would introduce high-level policy and resource abstractions into the kernel and make distro neutrality substantially harder.
+
+POSIX compatibility may still be implemented as a userspace environment.
+
+## Relationship to Axiom 0
+
+This decision carries Axiom 0's authority model into the kernel.
+
+Authority is represented as something that can be possessed, delegated, restricted, and revoked rather than as an ambient privilege attached to an identity.
+
+## Implementation Boundary
+
+### Kernel
+
+* Capability validation.
+* Object lookup.
+* Rights enforcement.
+* Operation dispatch.
+* Kernel object state transitions.
+
+### Userspace
+
+* POSIX compatibility.
+* Service protocols.
+* Filesystems.
+* Networking.
+* Device drivers.
+* High-level policy.
+
+## Future Reconsideration
+
+This decision may only be reconsidered if the fundamental capability model of Axiom is abandoned.
