@@ -4,9 +4,13 @@
 mod interrupts;
 mod gdt;
 mod memory;
+mod object;
+mod capability;
 
 use core::panic::PanicInfo;
 use memory::BootInfo;
+use capability::{CNode, Capability, Rights};
+use object::{ObjectRef, ObjectKind};
 
 #[allow(dead_code)]
 static HELLO: &[u8] = b"AXIOM KERNEL ONLINE - by Soulfire";
@@ -84,7 +88,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // --- SUBSYSTEM INITIALIZATION ---
         gdt::init();
 
-        let vga = 0xB8000 as *mut u8;
+        //let vga = 0xB8000 as *mut u8;
 
         interrupts::init();
 
@@ -102,22 +106,56 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let boot_allocator = unsafe { memory::FrameAllocator::new(boot_info) };
         let mut bitmap_alloc = unsafe { memory::BitmapAllocator::bootstrap(boot_allocator) };
 
+        if let Some(frame) = bitmap_alloc.allocate_frame() {
+            print_hex_64(frame.start_address, 160*2, vga_buffer);
+        }
         // 1. Allocate a frame. This should grab frame 512 (0x200000).
-        let frame1 = bitmap_alloc.allocate_frame().unwrap();
-        print_hex_64(frame1.start_address, 160, vga_buffer); // Row 1
+        //let frame1 = bitmap_alloc.allocate_frame().unwrap();
+        //print_hex_64(frame1.start_address, 160, vga_buffer); // Row 1
 
         // 2. Allocate another frame. This should grab frame 513 (0x201000).
-        let frame2 = bitmap_alloc.allocate_frame().unwrap();
-        print_hex_64(frame2.start_address, 320, vga_buffer); // Row 2
+        //let frame2 = bitmap_alloc.allocate_frame().unwrap();
+        //print_hex_64(frame2.start_address, 320, vga_buffer); // Row 2
 
         // 3. Deallocate the FIRST frame (0x200000).
-        bitmap_alloc.deallocate_frame(frame1);
+        //bitmap_alloc.deallocate_frame(frame1);
 
         // 4. Allocate a third frame. 
         // A bump allocator would give 0x202000. 
         // Our true allocator should reuse the newly freed 0x200000!
-        let frame3 = bitmap_alloc.allocate_frame().unwrap();
-        print_hex_64(frame3.start_address, 480, vga_buffer); // Row 3
+        //let frame3 = bitmap_alloc.allocate_frame().unwrap();
+        //print_hex_64(frame3.start_address, 480, vga_buffer); // Row 3
+
+        let mut cnode = CNode::new();
+
+        let endpoint_cap = Capability {
+            object: ObjectRef::new(0x42),     //dummy id
+            kind: ObjectKind::Endpoint,
+            rights: Rights::ALL,
+        };
+
+
+        cnode.slots[1].insert(endpoint_cap);
+        let handle1_gen = cnode.slots[1].generation;
+
+        cnode.slots[2].insert(endpoint_cap);
+        let handle1_gen = cnode.slots[2].generation;
+
+        let valid_before = cnode.slots[1].is_valid_generation(handle1_gen);
+        print_hex_64(valid_before as u64, 160 * 4, vga_buffer); // Expect: 1
+
+        cnode.slots[1].delete();
+
+        let valid_after = cnode.slots[1].is_valid_generation(handle1_gen);
+        print_hex_64(valid_after as u64, 160 * 5, vga_buffer); // Expect: 0
+
+        let current_gen = cnode.slots[1].generation; 
+        print_hex_64(current_gen as u64, 160 * 6, vga_buffer); // Expect: 2
+
+        let slot2_valid = cnode.slots[2].is_valid_generation(handle2_gen);
+        print_hex_64(slot2_valid as u64, 160 * 7, vga_buffer); // Expect: 1
+
+        
     }
 
     loop {
