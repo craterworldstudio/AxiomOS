@@ -107,8 +107,11 @@ pub fn retype(
     kind: ObjectKind,
     object_table: &mut ObjectTable,
     cnode: &mut CNode,
-) -> Result<(ObjectRef, usize), RetypeError> { // Note: Now returns the CNode slot index!
+) -> Result<(ObjectRef, usize), RetypeError> { 
     let (size, align) = kind.layout();
+    let size = size as u64;   // Cast to u64 for physical math
+    let align = align as u64; // Cast to u64 for physical math
+    
     let current_phys = untyped.physical_base + untyped.watermark;
     let remainder = current_phys % align;
     let offset = if remainder == 0 { 0 } else { align - remainder };

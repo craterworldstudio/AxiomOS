@@ -10,12 +10,12 @@ pub enum ObjectKind {
 
 impl ObjectKind {
     /// Returns the (size, alignment) required for the kernel object.
-    pub fn layout(&self) -> (u64, u64) {
+    pub fn layout(&self) -> (usize, usize) {
         match self {
-            ObjectKind::Endpoint => (128, 64),
-            ObjectKind::TCB => (512, 128),
+            ObjectKind::Endpoint => (128, 8),
+            ObjectKind::TCB => (512, 8),
             ObjectKind::VSpace => (4096, 4096),
-            ObjectKind::CNode => (4096, 4096),
+            ObjectKind::Untyped => (0, 1),
             _ => (0, 1),
         }
     }
@@ -28,6 +28,7 @@ impl ObjectKind {
 pub struct ObjectRef(u64);
 
 impl ObjectRef {
+
     pub const fn new(index: u32, generation: u32) -> Self {
         Self(((generation as u64) << 32) | (index as u64))
     }

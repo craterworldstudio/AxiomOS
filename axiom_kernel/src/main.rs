@@ -6,7 +6,10 @@ mod gdt;
 mod memory;
 mod object;
 mod capability;
+mod thread;
+mod scheduler;
 
+use thread::switch_context;
 use core::panic::PanicInfo;
 use memory::BootInfo;
 use capability::{CNode, Capability, Rights, CapHandle};
@@ -14,6 +17,44 @@ use object::{ObjectRef, ObjectKind, Untyped, ObjectTable};
 
 #[allow(dead_code)]
 static HELLO: &[u8] = b"AXIOM KERNEL ONLINE - by Soulfire";
+
+static mut GENESIS_RSP: u64 = 0;
+static mut THREAD_B_RSP: u64 = 0;
+static mut PING_PONG_COUNTER: u64 = 0;
+
+
+extern "C" fn thread_b_entry() {
+    let vga = 0xB8000 as *mut u8;
+    let mut col = 0; // Local state preserved on Thread B's stack!
+    loop {
+        unsafe {
+            *vga.offset(160 * 14 + col * 2) = b'B';
+            *vga.offset(160 * 14 + col * 2 + 1) = 0x09; 
+            
+            col = (col + 1) % 80; // Move right, wrap at edge
+            
+            // Increased delay so human eyes can see the context switch
+            for _ in 0..5_000_000 { core::arch::asm!("nop"); }
+            scheduler::yield_thread(); 
+        }
+    }
+}
+
+extern "C" fn thread_c_entry() {
+    let vga = 0xB8000 as *mut u8;
+    let mut col = 0; // Local state preserved on Thread C's stack!
+    loop {
+        unsafe {
+            *vga.offset(160 * 15 + col * 2) = b'C';
+            *vga.offset(160 * 15 + col * 2 + 1) = 0x0C; 
+            
+            col = (col + 1) % 80;
+            
+            for _ in 0..5_000_000 { core::arch::asm!("nop"); }
+            scheduler::yield_thread(); 
+        }
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
@@ -72,53 +113,73 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         ) };
 
         // ========================================================
-            // MILESTONE (BRICK #4A): INVOKE ROUTER & ENDPOINT DISPATCH
-            // ========================================================
+        // MILESTONE (BRICK #5B): COOPERATIVE SCHEDULER
+        // ========================================================
 
-            let object_table = unsafe { &mut capability::KERNEL_OBJECT_TABLE };
-            let cnode = unsafe { &mut capability::GENESIS_CNODE };
+        // Re-establish our kernel data plane handles
+        let object_table = unsafe { &mut *core::ptr::addr_of_mut!(capability::KERNEL_OBJECT_TABLE) };
+        let cnode = unsafe { &mut *core::ptr::addr_of_mut!(capability::GENESIS_CNODE) };
 
-            let base_addr1 = bitmap_alloc.allocate_contiguous(1).unwrap();
-            let mut untyped1 = object::Untyped {
-                physical_base: base_addr1, size: 4096, watermark: 0,
-            };
+        let base_addr1 = bitmap_alloc.allocate_contiguous(1).unwrap();
+        let mut untyped1 = object::Untyped {
+            physical_base: base_addr1, size: 4096, watermark: 0,
+        };
 
-            // 1. Retype a valid Endpoint
-            let (_, ep_slot) = capability::retype(
-                &mut untyped1, object::ObjectKind::Endpoint, object_table, cnode
-            ).unwrap();
-            
-            let ep_handle = capability::CapHandle::new(ep_slot as u32, cnode.slots[ep_slot].generation).0;
-
-            // TEST 1: Valid SEND -> SUCCESS (Row 8, Expect: 0)
-            // (The payload 0xDEADC0DE will be printed by the loopback at Row 9!)
-            let res_success = unsafe { invoke_syscall(ep_handle, capability::OP_SEND, 0xDEADC0DE, 0) };
-            print_hex_64(res_success, 160 * 8, vga_buffer); 
-
-            // TEST 2: Stale Generation -> REJECT (Row 10, Expect: 2)
-            let stale_handle = capability::CapHandle::new(ep_slot as u32, 999).0;
-            let res_stale = unsafe { invoke_syscall(stale_handle, capability::OP_SEND, 0, 0) };
-            print_hex_64(res_stale, 160 * 10, vga_buffer); 
-
-            // TEST 3: Missing SEND (WRITE) Right -> REJECT (Row 11, Expect: 3)
-            let mut readonly_cap = cnode.slots[ep_slot].capability.unwrap();
-            readonly_cap.rights = capability::Rights::READ; // Strip WRITE authority
-            cnode.slots[2].insert(readonly_cap);
-            let ro_handle = capability::CapHandle::new(2, cnode.slots[2].generation).0;
-            
-            let res_rights = unsafe { invoke_syscall(ro_handle, capability::OP_SEND, 0, 0) };
-            print_hex_64(res_rights, 160 * 11, vga_buffer); 
-
-            // TEST 4: Wrong Capability Kind -> REJECT (Row 12, Expect: 4)
-            // Retype a CNode and attempt to SEND a message to it
-            let (_, tcb_slot) = capability::retype(
-                &mut untyped1, object::ObjectKind::TCB, object_table, cnode
-            ).unwrap();
-            let tcb_handle = capability::CapHandle::new(tcb_slot as u32, cnode.slots[tcb_slot].generation).0;
-            
-            let res_kind = unsafe { invoke_syscall(tcb_handle, capability::OP_SEND, 0, 0) };
-            print_hex_64(res_kind, 160 * 12, vga_buffer);
+        // 1. BOOTSTRAP GENESIS
+        let (genesis_ref, _) = capability::retype(
+            &mut untyped1, object::ObjectKind::TCB, object_table, cnode
+        ).unwrap();
         
+        let (_, gen_phys) = object_table.resolve(genesis_ref).unwrap();
+        let genesis_tcb = unsafe { &mut *(gen_phys as *mut thread::TCB) };
+        
+        // Genesis's RSP is left uninitialized; it will be captured on the first yield.
+        genesis_tcb.rsp = 0; 
+        genesis_tcb.state = thread::ThreadState::Running;
+        // Metadata only: marks the pre-existing bootloader stack region
+        genesis_tcb.stack_base = 0x90000; 
+        
+        // Hand Genesis to the Scheduler
+        unsafe { scheduler::SCHEDULER.current = Some(genesis_ref); }
+
+        // 2. CREATE THREAD B
+        let stack_b = bitmap_alloc.allocate_frame().unwrap();
+        let (ref_b, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+        let (_, phys_b) = object_table.resolve(ref_b).unwrap();
+        let tcb_b = unsafe { &mut *(phys_b as *mut thread::TCB) };
+        
+        tcb_b.state = thread::ThreadState::Ready;
+        tcb_b.stack_base = stack_b.start_address;
+        tcb_b.rsp = thread::TCB::forge_stack(stack_b.start_address + memory::PAGE_SIZE, thread_b_entry as u64);
+        
+        unsafe { scheduler::SCHEDULER.enqueue(ref_b); }
+
+        // 3. CREATE THREAD C
+        let stack_c = bitmap_alloc.allocate_frame().unwrap();
+        let (ref_c, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+        let (_, phys_c) = object_table.resolve(ref_c).unwrap();
+        let tcb_c = unsafe { &mut *(phys_c as *mut thread::TCB) };
+        
+        tcb_c.state = thread::ThreadState::Ready;
+        tcb_c.stack_base = stack_c.start_address;
+        tcb_c.rsp = thread::TCB::forge_stack(stack_c.start_address + memory::PAGE_SIZE, thread_c_entry as u64);
+
+        unsafe { scheduler::SCHEDULER.enqueue(ref_c); }
+
+        // 4. ENTER THE COOPERATIVE MULTIPLEXING LOOP
+        let vga = 0xB8000 as *mut u8;
+        let mut col_a = 0; // Preserved on the Bootloader Stack!
+        loop {
+            unsafe {
+                *vga.offset(160 * 13 + col_a * 2) = b'A';
+                *vga.offset(160 * 13 + col_a * 2 + 1) = 0x0A; 
+                
+                col_a = (col_a + 1) % 80;
+                
+                for _ in 0..5_000_000 { core::arch::asm!("nop"); }
+                scheduler::yield_thread();
+            }
+        }
         //unsafe { core::arch::asm!("int3"); } // Manually trigger a CPU Breakpoint exception
         //unsafe { core::arch::asm!("ud2"); } // Manually Trigger a CPU Kernal Panic
         }
