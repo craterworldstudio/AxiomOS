@@ -77,6 +77,34 @@ pub fn print_hex_64(val: u64, offset: isize, vga: *mut u8) {
     }
 }
 
+static mut VALID_HANDLE: u64 = 0;
+static mut INVALID_HANDLE: u64 = 0;
+
+extern "C" fn thread_b_entry() {
+    unsafe {
+        // Attempt a valid invocation (OP_SEND = 1)
+        let _result = invoke_syscall(VALID_HANDLE, 1, 0xDEADC0DE, 0);
+        
+        // If we get here, the syscall boundary successfully restored our thread context!
+        crate::ktest(b"Thread B: Valid Syscall", true);
+        
+        loop { crate::scheduler::yield_thread(); }
+    }
+}
+
+extern "C" fn thread_c_entry() {
+    unsafe {
+        // Attempt an invalid invocation (Should be rejected by the router)
+        let _result = invoke_syscall(INVALID_HANDLE, 1, 0xBADF00D, 0);
+        
+        // If we get here without a panic, the capability router safely rejected us!
+        crate::ktest(b"Thread C: Invalid Rejected", true);
+        
+        loop { crate::scheduler::yield_thread(); }
+    }
+}
+
+
 // ============================================================================
 // KERNEL ORCHESTRATOR
 // ============================================================================
@@ -145,7 +173,41 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     ktest(b"INTEGRATION BASELINE", true);
     unsafe { VGA_ROW += 1; }
 
-    // (Thread B and Thread C initialization will go here)
+    // ========================================================================
+    // INTEGRATION LOOP v0.1: CAPABILITY ROUTER + SCHEDULER
+    // ========================================================================
+
+    // 1. Create a valid Endpoint to invoke
+    let (ep_ref, ep_slot) = capability::retype(
+        &mut untyped1, object::ObjectKind::Endpoint, object_table, cnode
+    ).unwrap();
+    
+    unsafe {
+        VALID_HANDLE = ep_slot as u64;
+        INVALID_HANDLE = (ep_slot + 99) as u64; // Guaranteed empty slot
+    }
+
+    // 2. Spawn Thread B (Valid Capability Context)
+    let stack_b = bitmap_alloc.allocate_frame().unwrap();
+    let (ref_b, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+    let (_, phys_b) = object_table.resolve(ref_b).unwrap();
+    let tcb_b = unsafe { &mut *(phys_b as *mut thread::TCB) };
+    
+    tcb_b.state = thread::ThreadState::Ready;
+    tcb_b.stack_base = stack_b.start_address;
+    tcb_b.rsp = thread::TCB::forge_stack(stack_b.start_address + memory::PAGE_SIZE, thread_b_entry as u64);
+    unsafe { scheduler::SCHEDULER.enqueue(ref_b); }
+
+    // 3. Spawn Thread C (Invalid Capability Context)
+    let stack_c = bitmap_alloc.allocate_frame().unwrap();
+    let (ref_c, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+    let (_, phys_c) = object_table.resolve(ref_c).unwrap();
+    let tcb_c = unsafe { &mut *(phys_c as *mut thread::TCB) };
+    
+    tcb_c.state = thread::ThreadState::Ready;
+    tcb_c.stack_base = stack_c.start_address;
+    tcb_c.rsp = thread::TCB::forge_stack(stack_c.start_address + memory::PAGE_SIZE, thread_c_entry as u64);
+    unsafe { scheduler::SCHEDULER.enqueue(ref_c); }
 
     let final_msg = b"Entering scheduler...";
     for (i, &b) in final_msg.iter().enumerate() {
@@ -155,9 +217,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             *vga.offset(VGA_ROW * 160 + i as isize * 2 + 1) = 0x0E; // Yellow
         }
     }
+    unsafe { VGA_ROW += 2; } // Push diagnostic row down for threads to use
 
+    // 4. Genesis becomes a normal scheduled thread!
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe { scheduler::yield_thread(); }
     }
 }
 
