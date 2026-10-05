@@ -59,6 +59,9 @@ pub fn init() {
         IDTR.limit = (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16;
         IDTR.base = (&raw const IDT) as *const IdtEntry as u64;
 
+        IDT[0x80].set_handler(syscall_stub as *const () as u64);
+        IDT[0x80].attributes = 0x8E;
+
 
         asm!(
             "lidt [{}]",
@@ -214,4 +217,27 @@ pub extern "C" fn ist_test_handler(rsp: u64) {
     
     // Print the raw stack pointer address right after it (Offset 344)
     crate::print_hex_64(rsp, 344, vga);
+}
+
+global_asm!(
+    ".global syscall_stub",
+    "syscall_stub:",
+    // The CPU pushed SS, RSP, RFLAGS, CS, RIP.
+    // The caller placed arguments in RDI, RSI, RDX, RCX.
+    // We must preserve volatile caller-saved registers that Rust might clobber,
+    // EXCEPT for RAX, which will hold the return value from the handler.
+    "push r8",
+    "push r9",
+    "push r10",
+    "push r11",
+    "call sys_invoke_handler",
+    "pop r11",
+    "pop r10",
+    "pop r9",
+    "pop r8",
+    "iretq"
+);
+
+extern "C" {
+    fn syscall_stub();
 }

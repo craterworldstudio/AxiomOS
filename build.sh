@@ -1,6 +1,17 @@
 #!/bin/bash
 set -e
 
+echo "[BUILD] Compiling Rust Kernel..."
+cargo build -p axiom_kernel
+
+echo "[BUILD] Flattening Kernel Binary..."
+objcopy -O binary target/x86_64-unknown-none/debug/axiom_kernel target/x86_64-unknown-none/debug/axiom_kernel.bin
+
+# --- AUTO-SCALING LOGIC ---
+KERNEL_BYTES=$(stat -c%s target/x86_64-unknown-none/debug/axiom_kernel.bin)
+KERNEL_SECTORS=$(( (KERNEL_BYTES + 511) / 512 ))
+echo "[BUILD] Kernel size: $KERNEL_BYTES bytes ($KERNEL_SECTORS sectors)"
+
 echo "[BUILD] Assembling Stage 1..."
 nasm -f bin bootloader/boot.asm -o bootloader/boot.bin
 STAGE1_SIZE=$(stat -c%s bootloader/boot.bin)
@@ -10,28 +21,20 @@ if [ "$STAGE1_SIZE" -ne 512 ]; then
 fi
 
 echo "[BUILD] Assembling Stage 2..."
-nasm -f bin bootloader/stage2.asm -o bootloader/stage2.bin
+# Inject the dynamic sector count into NASM using -D
+nasm -f bin bootloader/stage2.asm -DKERNEL_SECTORS=$KERNEL_SECTORS -o bootloader/stage2.bin
 STAGE2_SIZE=$(stat -c%s bootloader/stage2.bin)
 if [ "$STAGE2_SIZE" -ne 4096 ]; then
     echo "[ERROR] Stage 2 is $STAGE2_SIZE bytes (must be exactly 4096)"
     exit 1
 fi
 
-echo "[BUILD] Compiling Rust Kernel..."
-cargo build -p axiom_kernel
-
-echo "[BUILD] Flattening Kernel Binary..."
-#rust-objcopy --strip-all -O binary target/x86_64-unknown-none/debug/axiom_kernel target/x86_64-unknown-none/debug/axiom_kernel.bin
-objcopy -O binary target/x86_64-unknown-none/debug/axiom_kernel target/x86_64-unknown-none/debug/axiom_kernel.bin
-
 echo "[BUILD] Forging unified disk image..."
 cat bootloader/boot.bin bootloader/stage2.bin target/x86_64-unknown-none/debug/axiom_kernel.bin > target/disk.img
 
 echo "[BUILD] Padding disk image to prevent EOF read errors..."
 dd if=/dev/zero bs=512 count=64 >> target/disk.img 2>/dev/null
-#dd if=target/disk.img bs=512 skip=9 count=128 of=/dev/null status=none && echo "128 sectors readable"
 
 echo "[OK] Axiom Image forged successfully."
-
 echo "[RUN] Starting AxiomOS."
 qemu-system-x86_64 -drive format=raw,file=target/disk.img

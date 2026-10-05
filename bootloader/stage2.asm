@@ -1,6 +1,10 @@
 [BITS 16]
 [ORG 0x7E00]
 
+%ifndef KERNEL_SECTORS
+%define KERNEL_SECTORS 64
+%endif
+
 start:
     ; Stage 1 jumped here. DL still contains the boot drive.
     mov [BOOT_DRIVE], dl
@@ -68,11 +72,50 @@ load_kernel:
     ; The kernel starts at Sector 10 (Stage 1 = 1 sector, Stage 2 = 32 sectors)
 
     mov dl, [BOOT_DRIVE]
-    mov ah, 0x42            ; Extended Read Sectors (LBA)
-    mov si, dap_kernel      ; Point DS:SI to the Disk Address Packet
+    mov cx, KERNEL_SECTORS      ; Total sectors left to read
+    mov ax, 0x1000              ; Starting segment (0x1000:0x0000)
+    mov ebx, 9                  ; Starting LBA (lower 32 bits)
+
+.read_chunk:
+    test cx, cx
+    jz .read_done               ; If 0 sectors left, we're done
+
+    mov dx, 64                  ; Try to read 64 sectors
+    cmp cx, 64
+    jge .perform_read
+    mov dx, cx                  ; If less than 64 left, read the remainder
+
+.perform_read:
+    ; Update the Disk Address Packet dynamically
+    mov [dap_sectors], dx
+    mov [dap_segment], ax
+    mov [dap_lba], ebx
+
+    pusha                       ; Save registers (BIOS might clobber them)
+    mov ah, 0x42
+    mov dl, [BOOT_DRIVE]
+    mov si, dap_kernel
     int 0x13
+    popa
     jc disk_error
 
+    ; Update counters
+    sub cx, dx                  ; Decrease sectors left
+    
+    push dx
+    movzx edx, dx
+    add ebx, edx                ; Advance LBA by sectors read
+    pop dx
+
+    ; Advance destination segment:
+    ; Each sector is 512 bytes = 0x20 paragraphs (segments).
+    ; Advance segment by (sectors * 0x20).
+    shl dx, 5                   
+    add ax, dx                  
+    
+    jmp .read_chunk
+
+.read_done:
     ; Reset ES back to 0 for flat memory operations
     xor ax, ax
     mov es, ax
@@ -118,11 +161,15 @@ BOOT_DRIVE db 0
 dap_kernel:
     db 0x10                 ; Size of DAP (16 bytes)
     db 0                    ; Unused
-    dw 64                  ; Number of sectors to read (64 KiB)
+dap_sectors:
+    dw 0                    ; Number of sectors (dynamically updated!)
     dw 0x0000               ; Target offset
-    dw 0x1000               ; Target segment (0x1000:0x0000 = physical 0x10000)
-    dq 9                    ; Start LBA (Sector 10 is LBA 9)
-
+dap_segment:
+    dw 0x1000               ; Target segment (dynamically updated!)
+dap_lba:
+    dd 9                    ; Start LBA (lower 32 bits, dynamically updated!)
+    dd 0                    ; Start LBA (upper 32 bits)
+    
 ; ==========================================
 ; Global Descriptor Table (GDT)
 ; ==========================================
@@ -312,10 +359,10 @@ long_mode_entry:
     call delay64
 
     ; 2. Relocate Kernel (0x10000 -> 0x100000)
-    cld                     ; Clear direction flag
-    mov rsi, 0x10000        ; Source
-    mov rdi, 0x100000       ; Destination
-    mov rcx, 32768          ; Copy 64 sectors (64KiB)
+    cld                                    ; Clear direction flag
+    mov rsi, 0x10000                       ; Source
+    mov rdi, 0x100000                      ; Destination
+    mov rcx, KERNEL_SECTORS * 512          ; Copy dynamic sectors
     rep movsb               
 
     mov rsi, msg_copy

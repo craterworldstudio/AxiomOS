@@ -4,6 +4,8 @@ SECTIONS
 {
     . = 0x100000;
 
+    KERNEL_START = .;
+
     .text : ALIGN(16)
     {
         *(.text._start)
@@ -28,7 +30,6 @@ SECTIONS
         BSS_END = .;
     }
 
-    /* Export the kernel end symbol */
     KERNEL_END = .;
 
     /DISCARD/ :
@@ -40,3 +41,4 @@ SECTIONS
         *(.note.*)
     }
 }
+
