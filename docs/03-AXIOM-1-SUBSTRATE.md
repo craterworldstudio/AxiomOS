@@ -65,8 +65,8 @@ Axiom boots via a legacy BIOS fallback process designed for maximum control and 
 - [x] Rust kernel seizes the VGA buffer and prints confirmation.
 
 ### Kernel Foundations
-- [ ] Establish physical memory model (Frame Allocator).
-- [ ] Establish CPU exception handlers and Interrupt Descriptor Table (IDT).
+- [x] Establish physical memory model (Frame Allocator).
+- [x] Establish CPU exception handlers and Interrupt Descriptor Table (IDT).
 
 ## 5. Physical Memory Map
 Axiom 1 establishes the following absolute physical memory layout before handing control to the Rust kernel. There is strictly no overlap between these regions.

@@ -10,7 +10,7 @@ mod capability;
 use core::panic::PanicInfo;
 use memory::BootInfo;
 use capability::{CNode, Capability, Rights};
-use object::{ObjectRef, ObjectKind};
+use object::{ObjectRef, ObjectKind, Untyped, ObjectTable};
 
 #[allow(dead_code)]
 static HELLO: &[u8] = b"AXIOM KERNEL ONLINE - by Soulfire";
@@ -64,97 +64,97 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     //print_hex_64(is_valid as u64, 160 * 12, vga_buffer);
     // 3. If valid, prove it by printing the memory map entry count
     if is_valid {
-        let count = unsafe { (*boot_info).memory_map_len };
-        let count_msg = b" | ENTRIES: ";
-        for &byte in count_msg.iter() {
-            unsafe {
-                *vga_buffer.add(offset) = byte;
-                *vga_buffer.add(offset + 1) = 0x0F;
-            }
-            offset += 2;
-        }
-
-        let hex_chars = b"0123456789ABCDEF";
-        let high = hex_chars[((count >> 4) & 0x0F) as usize];
-        let low = hex_chars[(count & 0x0F) as usize];
-
-        unsafe {
-            *vga_buffer.add(offset) = high;
-            *vga_buffer.add(offset + 1) = 0x0E;
-            *vga_buffer.add(offset + 2) = low;
-            *vga_buffer.add(offset + 3) = 0x0E;
-        }
-
-        // --- SUBSYSTEM INITIALIZATION ---
         gdt::init();
-
-        //let vga = 0xB8000 as *mut u8;
-
         interrupts::init();
 
-
-
-        
-        //unsafe { core::arch::asm!("int3"); } // Manually trigger a CPU Breakpoint exception
-        //unsafe { core::arch::asm!("ud2"); } // Manually Trigger a CPU Kernal Panic
-
-
-
-
-        
-        // --- ALLOCATION & DEALLOCATION TEST ---
         let boot_allocator = unsafe { memory::FrameAllocator::new(boot_info) };
         let mut bitmap_alloc = unsafe { memory::BitmapAllocator::bootstrap(boot_allocator) };
 
-        if let Some(frame) = bitmap_alloc.allocate_frame() {
-            print_hex_64(frame.start_address, 160*2, vga_buffer);
-        }
-        // 1. Allocate a frame. This should grab frame 512 (0x200000).
-        //let frame1 = bitmap_alloc.allocate_frame().unwrap();
-        //print_hex_64(frame1.start_address, 160, vga_buffer); // Row 1
-
-        // 2. Allocate another frame. This should grab frame 513 (0x201000).
-        //let frame2 = bitmap_alloc.allocate_frame().unwrap();
-        //print_hex_64(frame2.start_address, 320, vga_buffer); // Row 2
-
-        // 3. Deallocate the FIRST frame (0x200000).
-        //bitmap_alloc.deallocate_frame(frame1);
-
-        // 4. Allocate a third frame. 
-        // A bump allocator would give 0x202000. 
-        // Our true allocator should reuse the newly freed 0x200000!
-        //let frame3 = bitmap_alloc.allocate_frame().unwrap();
-        //print_hex_64(frame3.start_address, 480, vga_buffer); // Row 3
-
+        // ========================================================
+        // PHASE 3: UNTYPED MEMORY & RETYPE TRANSACTION
+        // ========================================================
+        let mut object_table = ObjectTable::new();
         let mut cnode = CNode::new();
 
-        let endpoint_cap = Capability {
-            object: ObjectRef::new(0x42),     //dummy id
-            kind: ObjectKind::Endpoint,
-            rights: Rights::ALL,
+        // 1. Grab a raw physical frame and transform it into Untyped authority
+        let frame = bitmap_alloc.allocate_frame().unwrap();
+        let mut untyped = Untyped {
+            physical_base: frame.start_address,
+            size: 4096,
+            watermark: 0,
         };
+        
+        // Output 1: Initial Watermark (Row 2, Expect: 0)
+        print_hex_64(untyped.watermark, 160 * 2, vga_buffer);
+
+        // 2. SUCCESS TEST: Retype an Endpoint
+        let obj_ref1 = capability::retype(
+            &mut untyped, 
+            ObjectKind::Endpoint, // Requires 128 bytes, 64-byte aligned
+            &mut object_table, 
+            &mut cnode
+        ).unwrap();
+
+        // Output 2: Capability exists in CNode Slot 1 (Row 3, Expect: 1)
+        let cap_valid = cnode.slots[1].capability.is_some();
+        print_hex_64(cap_valid as u64, 160 * 3, vga_buffer); 
+
+        // Output 3: ObjectRef resolves to correct physical address (Row 4, Expect: frame address)
+        if let Some((kind, phys_addr)) = object_table.resolve(obj_ref1) {
+            print_hex_64(phys_addr, 160 * 4, vga_buffer);
+        }
+
+        // Output 4: Watermark advanced by exactly 128 bytes (Row 5, Expect: 128 / 0x80)
+        print_hex_64(untyped.watermark, 160 * 5, vga_buffer);
+        // 3. FAILURE TEST: Insufficient memory
+        let watermark_before = untyped.watermark;
+        let fail_result = capability::retype(
+            &mut untyped,
+            ObjectKind::CNode, 
+            &mut object_table,
+            &mut cnode
+        );
+
+        // Output 5: Retype correctly returned an Error (Row 6, Expect: 1)
+        let is_err = fail_result.is_err();
+        print_hex_64(is_err as u64, 160 * 6, vga_buffer); 
+
+        // Output 6: Transactional rollback - Watermark unchanged (Row 7, Expect: 1)
+        let unchanged = watermark_before == untyped.watermark;
+        print_hex_64(unchanged as u64, 160 * 7, vga_buffer);
 
 
-        cnode.slots[1].insert(endpoint_cap);
-        let handle1_gen = cnode.slots[1].generation;
 
-        cnode.slots[2].insert(endpoint_cap);
-        let handle1_gen = cnode.slots[2].generation;
+        // 1. Destroy the first object
+        object_table.destroy_object(obj_ref1);
 
-        let valid_before = cnode.slots[1].is_valid_generation(handle1_gen);
-        print_hex_64(valid_before as u64, 160 * 4, vga_buffer); // Expect: 1
+        // Output 7: Old ObjectRef instantly resolves to None (Row 8, Expect: 1)
+        let old_resolved_none = object_table.resolve(obj_ref1).is_none();
+        print_hex_64(old_resolved_none as u64, 160 * 8, vga_buffer);
 
-        cnode.slots[1].delete();
+        // 2. Retype a second object (LIFO free-list guarantees exact ObjectTable slot reuse)
+        let obj_ref2 = capability::retype(
+            &mut untyped,
+            ObjectKind::Endpoint,
+            &mut object_table,
+            &mut cnode
+        ).unwrap();
 
-        let valid_after = cnode.slots[1].is_valid_generation(handle1_gen);
-        print_hex_64(valid_after as u64, 160 * 5, vga_buffer); // Expect: 0
+        // Output 8: Generations are distinctly different (Row 9, Expect: 1)
+        let gen_diff = obj_ref1.generation() != obj_ref2.generation();
+        print_hex_64(gen_diff as u64, 160 * 9, vga_buffer);
 
-        let current_gen = cnode.slots[1].generation; 
-        print_hex_64(current_gen as u64, 160 * 6, vga_buffer); // Expect: 2
+        // Output 9: Old ObjectRef STILL resolves to None against reused slot (Row 10, Expect: 1)
+        let old_still_none = object_table.resolve(obj_ref1).is_none();
+        print_hex_64(old_still_none as u64, 160 * 10, vga_buffer);
 
-        let slot2_valid = cnode.slots[2].is_valid_generation(handle2_gen);
-        print_hex_64(slot2_valid as u64, 160 * 7, vga_buffer); // Expect: 1
-
+        // Output 10: New ObjectRef resolves successfully (Row 11, Expect: 1)
+        let new_resolved = object_table.resolve(obj_ref2).is_some();
+        print_hex_64(new_resolved as u64, 160 * 11, vga_buffer);
+        
+        
+        //unsafe { core::arch::asm!("int3"); } // Manually trigger a CPU Breakpoint exception
+        //unsafe { core::arch::asm!("ud2"); } // Manually Trigger a CPU Kernal Panic
         
     }
 

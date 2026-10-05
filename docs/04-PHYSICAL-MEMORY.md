@@ -373,7 +373,7 @@ These limitations are intentional for Axiom 1.
 * [x] IDT
 * [x] CPU exception entry stubs
 * [x] CPU exception handlers
-* [ ] Frame deallocation
+* [x] Frame deallocation
 * [ ] Dynamic kernel boundaries
 * [ ] Physical frame accounting
 * [ ] Full physical-memory ownership model
