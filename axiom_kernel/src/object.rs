@@ -1,3 +1,5 @@
+use crate::thread::{TCB, ThreadState};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectKind {
     Null,
@@ -175,6 +177,124 @@ impl ObjectTable {
                 entry.state = ObjectState::Empty { next_free_index: 0 };
             }
             
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct WaitQueue {
+    pub head: Option<ObjectRef>,
+    pub tail: Option<ObjectRef>,
+}
+
+impl WaitQueue {
+    pub const fn empty() -> Self {
+        Self { head: None, tail: None }
+    }
+
+    pub fn push(&mut self, tcb_ref: ObjectRef, object_table: &ObjectTable) {
+        let (_, phys_new) = object_table.resolve(tcb_ref).expect("Queue push: Invalid ObjectRef");
+        let new_tcb_ptr = phys_new as *mut TCB;
+        
+        unsafe {
+            core::ptr::write(&raw mut (*new_tcb_ptr).next_in_queue, None);
+        }
+
+        if let Some(tail_ref) = self.tail {
+            let (_, phys_tail) = object_table.resolve(tail_ref).unwrap();
+            let tail_tcb_ptr = phys_tail as *mut TCB;
+            unsafe {
+                core::ptr::write(&raw mut (*tail_tcb_ptr).next_in_queue, Some(tcb_ref));
+            }
+        } else {
+            self.head = Some(tcb_ref);
+        }
+        
+        self.tail = Some(tcb_ref);
+    }
+
+    pub fn pop(&mut self, object_table: &ObjectTable) -> Option<ObjectRef> {
+        let head_ref = self.head?;
+        let (_, phys_head) = object_table.resolve(head_ref).expect("Queue pop: Stale ObjectRef");
+        let head_tcb_ptr = phys_head as *mut TCB;
+        
+        unsafe {
+            let next_ptr = &raw mut (*head_tcb_ptr).next_in_queue;
+            let next_ref = core::ptr::read(next_ptr);
+            
+            self.head = next_ref;
+            if self.head.is_none() {
+                self.tail = None;
+            }
+            core::ptr::write(next_ptr, None);
+        }
+        
+        Some(head_ref)
+    }
+}
+
+pub struct Endpoint {
+    pub send_queue: WaitQueue,
+    pub recv_queue: WaitQueue,
+}
+
+impl Endpoint {
+    pub const fn new() -> Self {
+        Self {
+            send_queue: WaitQueue::empty(),
+            recv_queue: WaitQueue::empty(),
+        }
+    }
+
+    /// Attempts a synchronous SEND. Returns Some(woken_receiver) if rendezvous succeeded, None if blocked.
+    pub fn endpoint_send(&mut self, sender_ref: ObjectRef, payload: u64, object_table: &ObjectTable) -> Option<ObjectRef> {
+        if let Some(receiver_ref) = self.recv_queue.pop(object_table) {
+            let (_, phys_recv) = object_table.resolve(receiver_ref).unwrap();
+            let recv_ptr = phys_recv as *mut TCB;
+            
+            unsafe {
+                core::ptr::write(&raw mut (*recv_ptr).ipc_payload, payload);
+                core::ptr::write(&raw mut (*recv_ptr).state, ThreadState::Ready);
+            }
+            Some(receiver_ref) // Return the woken thread!
+        } else {
+            let (_, phys_send) = object_table.resolve(sender_ref).unwrap();
+            let send_ptr = phys_send as *mut TCB;
+            
+            unsafe {
+                core::ptr::write(&raw mut (*send_ptr).ipc_payload, payload);
+                core::ptr::write(&raw mut (*send_ptr).state, ThreadState::BlockedSend);
+            }
+            self.send_queue.push(sender_ref, object_table);
+            None
+        }
+    }
+
+    /// Attempts a synchronous RECEIVE. Returns Some(woken_sender) if rendezvous succeeded, None if blocked.
+    pub fn endpoint_receive(&mut self, receiver_ref: ObjectRef, object_table: &ObjectTable) -> Option<ObjectRef> {
+        if let Some(sender_ref) = self.send_queue.pop(object_table) {
+            let (_, phys_send) = object_table.resolve(sender_ref).unwrap();
+            let send_ptr = phys_send as *mut TCB;
+            
+            let (_, phys_recv) = object_table.resolve(receiver_ref).unwrap();
+            let recv_ptr = phys_recv as *mut TCB;
+            
+            unsafe {
+                let payload = core::ptr::read(&raw const (*send_ptr).ipc_payload);
+                core::ptr::write(&raw mut (*recv_ptr).ipc_payload, payload);
+                core::ptr::write(&raw mut (*send_ptr).state, ThreadState::Ready);
+            }
+            Some(sender_ref) // Return the woken thread!
+        } else {
+            let (_, phys_recv) = object_table.resolve(receiver_ref).unwrap();
+            let recv_ptr = phys_recv as *mut TCB;
+            
+            unsafe {
+                core::ptr::write(&raw mut (*recv_ptr).state, ThreadState::BlockedReceive);
+            }
+            self.recv_queue.push(receiver_ref, object_table);
+            None
         }
     }
 }

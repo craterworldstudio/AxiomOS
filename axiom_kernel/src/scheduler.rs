@@ -1,5 +1,5 @@
 use crate::object::ObjectRef;
-use crate::thread::TCB;
+use crate::thread::{TCB, ThreadState};
 use crate::capability::KERNEL_OBJECT_TABLE;
 
 pub const MAX_READY: usize = 16;
@@ -10,6 +10,8 @@ pub struct Scheduler {
     head: usize,
     tail: usize,
 }
+
+
 
 impl Scheduler {
     pub const fn new() -> Self {
@@ -45,21 +47,32 @@ pub unsafe fn yield_thread() {
     
     if let Some(next_ref) = sched.dequeue() {
         if let Some(prev_ref) = sched.current {
-            // 1. Queue rotation
-            sched.enqueue(prev_ref);
-            sched.current = Some(next_ref);
-
-            // 2. Object resolution via the capability data plane
-            let object_table = &mut KERNEL_OBJECT_TABLE;
+            let object_table = &KERNEL_OBJECT_TABLE;
             
+            // 1. Resolve outgoing TCB securely
             let (_, prev_phys) = object_table.resolve(prev_ref).unwrap();
-            let prev_tcb = &mut *(prev_phys as *mut TCB);
+            let prev_tcb_ptr = prev_phys as *mut TCB;
+            
+            // 2. State-Aware Rotation: Only enqueue if not blocked!
+            let prev_state = core::ptr::read(&raw const (*prev_tcb_ptr).state);
+            if prev_state == ThreadState::Ready || prev_state == ThreadState::Running {
+                // Safely update state to Ready if it was Running
+                core::ptr::write(&raw mut (*prev_tcb_ptr).state, ThreadState::Ready);
+                sched.enqueue(prev_ref);
+            }
 
+            // 3. Resolve incoming TCB
+            sched.current = Some(next_ref);
             let (_, next_phys) = object_table.resolve(next_ref).unwrap();
-            let next_tcb = &*(next_phys as *const TCB);
+            let next_tcb_ptr = next_phys as *mut TCB;
+            
+            core::ptr::write(&raw mut (*next_tcb_ptr).state, ThreadState::Running);
 
-            // 3. Execution context switch
-            crate::thread::switch_context(core::ptr::addr_of_mut!(prev_tcb.rsp), next_tcb.rsp);
+            // 4. UB-Free Context Switch
+            crate::thread::switch_context(
+                &raw mut (*prev_tcb_ptr).rsp, 
+                core::ptr::read(&raw const (*next_tcb_ptr).rsp)
+            );
         }
     }
 }

@@ -1,16 +1,23 @@
+use crate::object::ObjectRef;
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
     Ready = 0,
     Running = 1,
+    BlockedSend = 2,
+    BlockedReceive = 3,
 }
 
 #[repr(C)]
 pub struct TCB {
-    /// The stack pointer. Must remain at offset 0.
     pub rsp: u64,
     pub state: ThreadState,
     pub stack_base: u64,
+    
+    // IPC State
+    pub ipc_payload: u64, 
+    pub next_in_queue: Option<ObjectRef>, 
 }
 
 impl TCB {

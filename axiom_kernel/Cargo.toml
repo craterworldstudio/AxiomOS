@@ -5,5 +5,9 @@ edition = "2021"
 authors = ["Luna", "Gemini", "Tori"]
 description = "Axiom OS Bare-Metal Substrate"
 
+[features]
+# Default: dev build (main_dev.rs). Pass --features prod-mode for main_prod.rs.
+prod-mode = []
+
 [dependencies]
 # Currently empty. We rely on nothing but core.

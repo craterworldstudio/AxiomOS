@@ -1,8 +1,31 @@
 #!/bin/bash
 set -e
 
+# ============================================================================
+# Axiom Build System
+#
+#   ./build.sh        — Dev build   (main_dev.rs)  [default]
+#   ./build.sh -prod  — Prod build  (main_prod.rs)
+# ============================================================================
+
+PROD_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        -prod) PROD_MODE=1 ;;
+        *) echo "[WARN] Unknown flag: $arg"; ;;
+    esac
+done
+
+if [ "$PROD_MODE" -eq 1 ]; then
+    echo "[BUILD] Mode: PRODUCTION (main_prod.rs)"
+    CARGO_FLAGS="--features axiom_kernel/prod-mode"
+else
+    echo "[BUILD] Mode: DEVELOPMENT (main_dev.rs)"
+    CARGO_FLAGS=""
+fi
+
 echo "[BUILD] Compiling Rust Kernel..."
-cargo build -p axiom_kernel
+cargo build -p axiom_kernel $CARGO_FLAGS
 
 echo "[BUILD] Flattening Kernel Binary..."
 objcopy -O binary target/x86_64-unknown-none/debug/axiom_kernel target/x86_64-unknown-none/debug/axiom_kernel.bin
