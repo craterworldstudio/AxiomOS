@@ -9,6 +9,11 @@ pub struct BootInfo {
     pub memory_map_ptr: u64,
     pub memory_map_len: u64,
     pub memory_map_entry_size: u64,
+    pub framebuffer_base: u64,
+    pub framebuffer_size: u64,
+    pub horizontal_resolution: u32,
+    pub vertical_resolution: u32,
+    pub pixels_per_scan_line: u32,
 }
 
 #[repr(C)]

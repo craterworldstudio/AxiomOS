@@ -67,6 +67,34 @@ extern "C" fn thread_c_entry() {
     }
 }
 
+extern "C" fn dev_thread_b() {
+    // Local variable stored on Thread B's stack/registers
+    let mut col: isize = 0;
+    loop {
+        unsafe {
+            let vga = 0xB8000 as *mut u8;
+            *vga.offset(20 * 160 + col * 2) = b'B';
+            *vga.offset(20 * 160 + col * 2 + 1) = 0x0A; // Green
+        }
+        col += 1;
+        unsafe { crate::scheduler::yield_thread(); }
+    }
+}
+
+extern "C" fn dev_thread_c() {
+    // Local variable stored on Thread C's stack/registers
+    let mut col: isize = 0;
+    loop {
+        unsafe {
+            let vga = 0xB8000 as *mut u8;
+            *vga.offset(21 * 160 + col * 2) = b'C';
+            *vga.offset(21 * 160 + col * 2 + 1) = 0x0C; // Red
+        }
+        col += 1;
+        unsafe { crate::scheduler::yield_thread(); }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     unsafe {
@@ -80,7 +108,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let end = core::ptr::addr_of!(BSS_END) as *mut u8;
         let len = end as usize - start as usize;
         core::ptr::write_bytes(start, 0, len);
-    
+        crate::console::CONSOLE.init(boot_info);
 
     let vga_buffer = 0xB8000 as *mut u8;
 
@@ -297,6 +325,49 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     }
 
     unsafe { VGA_ROW += 1; }
+
+    // ========================================================================
+    // BRICK #6C: LIVE CONTEXT SWITCH VERIFICATION
+    // ========================================================================
+    unsafe {
+        // 1. Sterilize the scheduler from previous synthetic tests
+        scheduler::SCHEDULER = scheduler::Scheduler::new();
+        
+        // 2. Re-forge pristine stacks for B and C
+        let (_, phys_b) = object_table.resolve(ref_b).unwrap();
+        let tcb_b = phys_b as *mut thread::TCB;
+        core::ptr::write(&raw mut (*tcb_b).state, thread::ThreadState::Ready);
+        let rsp_b = thread::TCB::forge_stack(
+            core::ptr::read(&raw const (*tcb_b).stack_base) + memory::PAGE_SIZE, 
+            dev_thread_b as u64
+        );
+        core::ptr::write(&raw mut (*tcb_b).rsp, rsp_b);
+
+        let (_, phys_c) = object_table.resolve(ref_c).unwrap();
+        let tcb_c = phys_c as *mut thread::TCB;
+        core::ptr::write(&raw mut (*tcb_c).state, thread::ThreadState::Ready);
+        let rsp_c = thread::TCB::forge_stack(
+            core::ptr::read(&raw const (*tcb_c).stack_base) + memory::PAGE_SIZE, 
+            dev_thread_c as u64
+        );
+        core::ptr::write(&raw mut (*tcb_c).rsp, rsp_c);
+
+        // 3. Enqueue B and C
+        scheduler::SCHEDULER.enqueue(ref_b);
+        scheduler::SCHEDULER.enqueue(ref_c);
+        
+        // 4. Genesis becomes a normal scheduled thread!
+        let genesis_msg = b"Genesis yielding to live threads...";
+        for (i, &b) in genesis_msg.iter().enumerate() {
+            let vga = 0xB8000 as *mut u8;
+            *vga.offset(VGA_ROW * 160 + i as isize * 2) = b;
+            *vga.offset(VGA_ROW * 160 + i as isize * 2 + 1) = 0x0E;
+        }
+
+        loop {
+            scheduler::yield_thread();
+        }
+    }
     // ========================================================================
 
 

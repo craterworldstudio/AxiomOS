@@ -151,19 +151,53 @@ pub extern "C" fn sys_invoke_handler(handle_val: u64, operation: u64, arg1: u64,
     if operation == OP_RECEIVE && !cap.rights.contains(Rights::READ) { return ERR_INVALID_RIGHTS; }
 
     let object_table = unsafe { &KERNEL_OBJECT_TABLE };
-    let (kind, _phys_addr) = object_table.resolve(cap.object).unwrap();
+    let (kind, phys_addr) = object_table.resolve(cap.object).unwrap();
 
     // Endpoint Dispatch
     match kind {
         ObjectKind::Endpoint => {
+            // SAFETY: phys_addr is the physical address of an Endpoint object registered
+            // by retype(). It is valid for the lifetime of the kernel and exclusively
+            // managed through the object table. No aliasing occurs because the object
+            // table grants a single physical address per registered object.
+            let ep = unsafe { &mut *(phys_addr as *mut crate::object::Endpoint) };
+
+            let caller_ref = unsafe {
+                crate::scheduler::SCHEDULER.current
+                    .expect("sys_invoke: no current thread")
+            };
+
             match operation {
                 OP_SEND => {
-                    // BRICK #4A LOOPBACK: Prove the payload arrived securely
-                    let vga = 0xB8000 as *mut u8;
-                    crate::print_hex_64(arg1, 160 * 9, vga); // Print payload at Row 9
+                    let woken = ep.endpoint_send(caller_ref, arg1, object_table);
+                    if let Some(woken_ref) = woken {
+                        // Synchronous rendezvous: a receiver was already waiting.
+                        // Mark it Ready (done inside endpoint_send) and put it back
+                        // on the run queue so the scheduler will pick it up.
+                        unsafe { crate::scheduler::SCHEDULER.enqueue(woken_ref); }
+                    } else {
+                        // No receiver was waiting — the sender is now BlockedSend.
+                        // Yield so another thread can run (and eventually receive).
+                        // When this thread is eventually unblocked and rescheduled,
+                        // switch_context will return here and we fall through to SYSCALL_OK.
+                        unsafe { crate::scheduler::yield_thread(); }
+                    }
                     SYSCALL_OK
                 },
-                OP_RECEIVE | OP_CALL => ERR_UNSUPPORTED_OP,
+                OP_RECEIVE => {
+                    let woken = ep.endpoint_receive(caller_ref, object_table);
+                    if let Some(woken_ref) = woken {
+                        // Synchronous rendezvous: a sender was already waiting.
+                        // Mark it Ready (done inside endpoint_receive) and re-enqueue it.
+                        unsafe { crate::scheduler::SCHEDULER.enqueue(woken_ref); }
+                    } else {
+                        // No sender was waiting — the receiver is now BlockedReceive.
+                        // Yield so another thread can run (and eventually send).
+                        unsafe { crate::scheduler::yield_thread(); }
+                    }
+                    SYSCALL_OK
+                },
+                OP_CALL => ERR_UNSUPPORTED_OP,
                 _ => ERR_UNSUPPORTED_OP,
             }
         },

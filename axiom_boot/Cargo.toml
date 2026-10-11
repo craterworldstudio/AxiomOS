@@ -1,0 +1,9 @@
+[package]
+name = "axiom_boot"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tori", "Gemini"]
+description = "Axiom OS Zero-Dependency Pure Rust UEFI Bootloader"
+
+[dependencies]
+# Strictly zero dependencies. We rely on nothing but core.

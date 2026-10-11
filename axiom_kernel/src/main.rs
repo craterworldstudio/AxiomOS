@@ -17,6 +17,7 @@ mod object;
 mod capability;
 mod thread;
 mod scheduler;
+mod console;
 
 #[cfg(not(feature = "prod-mode"))]
 include!("main_dev.rs");

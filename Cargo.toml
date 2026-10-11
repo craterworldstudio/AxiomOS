@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "axiom_boot",
     "axiom_core",
     "axiom_kernel"
 ]

@@ -23,7 +23,7 @@ pub struct TCB {
 impl TCB {
     /// Forges a pristine stack frame for a new execution context.
     pub fn forge_stack(stack_top: u64, entry_point: u64) -> u64 {
-        let mut rsp = stack_top;
+        let mut rsp = stack_top - 8;
 
         // Stack grows DOWN. The last thing to be popped (RIP) must be pushed first!
         rsp -= 8;
