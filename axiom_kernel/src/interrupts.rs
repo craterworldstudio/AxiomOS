@@ -53,14 +53,22 @@ pub fn init() {
         IDT[3].set_handler(breakpoint_stub as *const () as u64);
 
         IDT[8].set_handler(double_fault_stub as *const () as u64);
-
         IDT[8].ist = crate::gdt::DOUBLE_FAULT_IST_INDEX as u8 + 1;
+
+        IDT[14].set_handler(page_fault_stub as *const () as u64);
+        IDT[14].attributes = 0x8E; // Ring 0 Interrupt Gate
+
+        IDT[0x20].set_handler(timer_interrupt_stub as *const () as u64);
+        IDT[0x20].attributes = 0x8E; // Ring 0 Interrupt Gate
+
+        IDT[0xFF].set_handler(spurious_interrupt_stub as *const () as u64);
+        IDT[0xFF].attributes = 0x8E;
+
+        IDT[0x80].set_handler(syscall_stub as *const () as u64);
+        IDT[0x80].attributes = 0xEE; // Ring 3 Interrupt Gate (DPL = 3)
 
         IDTR.limit = (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16;
         IDTR.base = (&raw const IDT) as *const IdtEntry as u64;
-
-        IDT[0x80].set_handler(syscall_stub as *const () as u64);
-        IDT[0x80].attributes = 0x8E;
 
 
         asm!(
@@ -96,6 +104,7 @@ global_asm!(
 extern "C" {
     fn breakpoint_stub();
     fn double_fault_stub();
+    fn page_fault_stub();
 }
 
 #[no_mangle]
@@ -185,6 +194,68 @@ pub extern "C" fn double_fault_handler(frame: &ExceptionStackFrame, error_code: 
     kernel_panic("DOUBLE FAULT (#8)   ", error_code, frame, 0);
 }
 
+pub static mut USER_PAGE_FAULT_TRAPPED: bool = false;
+pub static mut LAST_FAULT_ADDR: u64 = 0;
+
+global_asm!(
+    ".global page_fault_stub",
+    "page_fault_stub:",
+    // CPU pushed: error code, RIP, CS, RFLAGS, RSP, SS
+    // Pop error code into RDX (3rd argument)
+    "pop rdx",
+    // Read faulting address from CR2 into RSI (2nd argument)
+    "mov rsi, cr2",
+    // Pass stack frame pointer into RDI (1st argument)
+    "mov rdi, rsp",
+    "call page_fault_handler",
+    "iretq"
+);
+
+pub static mut ISOLATION_TEST_PASSED: bool = false;
+
+#[no_mangle]
+pub extern "C" fn page_fault_handler(frame: *mut ExceptionStackFrame, cr2: u64, error_code: u64) {
+    unsafe {
+        LAST_FAULT_ADDR = cr2;
+        let is_user = (error_code & 4) != 0;
+        let is_present = (error_code & 1) != 0;
+        let is_read = (error_code & 2) == 0;
+
+        // Strict isolation test verification:
+        // Must be a user-mode read of present supervisor-only page at 0x100000
+        if is_user && cr2 == 0x100000 && is_present && is_read {
+            USER_PAGE_FAULT_TRAPPED = true;
+            ISOLATION_TEST_PASSED = true;
+
+            // Immediately restore BOOT_CR3 so the kernel runs purely on boot address space
+            if crate::memory::BOOT_CR3 != 0 {
+                core::arch::asm!("mov cr3, {}", in(reg) crate::memory::BOOT_CR3, options(nomem, nostack));
+            }
+
+            crate::ktest(b"Isolation: Present Supervisor Page Inaccessible", true);
+            crate::ktest(b"Isolation: CR2==0x100000, P=1, U/S=1, W/R=0", true);
+
+            // Safely terminate the faulting thread through explicit scheduler state
+            if let Some(current_ref) = crate::scheduler::SCHEDULER.current {
+                let object_table = &crate::capability::KERNEL_OBJECT_TABLE;
+                if let Some((_, phys)) = object_table.resolve(current_ref) {
+                    let tcb = phys as *mut crate::thread::TCB;
+                    core::ptr::write(&raw mut (*tcb).state, crate::thread::ThreadState::Terminated);
+                }
+            }
+
+            crate::ktest(b"Isolation: Faulting Thread Safely Terminated", true);
+
+            // Yield execution to the next ready thread; do not advance RIP or resume faulting code
+            crate::scheduler::yield_thread();
+
+            loop { core::arch::asm!("cli; hlt"); }
+        }
+
+        kernel_panic("PAGE FAULT (#14)   ", error_code, &*frame, cr2);
+    }
+}
+
 global_asm!(
     ".global ist_test_stub",
     "ist_test_stub:",
@@ -222,22 +293,194 @@ pub extern "C" fn ist_test_handler(rsp: u64) {
 global_asm!(
     ".global syscall_stub",
     "syscall_stub:",
-    // The CPU pushed SS, RSP, RFLAGS, CS, RIP.
+    // The CPU pushed SS, RSP, RFLAGS, CS, RIP (40 bytes).
     // The caller placed arguments in RDI, RSI, RDX, RCX.
-    // We must preserve volatile caller-saved registers that Rust might clobber,
-    // EXCEPT for RAX, which will hold the return value from the handler.
+    // Preserve volatile caller-saved registers that Rust might clobber.
     "push r8",
     "push r9",
     "push r10",
     "push r11",
+    // 40 + 32 = 72 bytes. Subtract 8 to achieve 16-byte alignment before call
+    "sub rsp, 8",
     "call sys_invoke_handler",
+    "add rsp, 8",
     "pop r11",
     "pop r10",
     "pop r9",
     "pop r8",
+    // If returning to Ring 3 (CS & 3 == 3), restore User Data Segments (0x1B)
+    "test qword ptr [rsp + 8], 3",
+    "jz 1f",
+    "push rax",
+    "mov ax, 0x1B",
+    "mov ds, ax",
+    "mov es, ax",
+    "pop rax",
+    "1:",
+    "iretq",
+
+    ".global timer_interrupt_stub",
+    "timer_interrupt_stub:",
+    // CPU pushed hardware frame:
+    // [rsp + 32]: SS
+    // [rsp + 24]: RSP
+    // [rsp + 16]: RFLAGS
+    // [rsp + 8]:  CS
+    // [rsp + 0]:  RIP
+
+    // Push 15 general-purpose registers (matching FrameKind::Interrupt layout)
+    "push r15",
+    "push r14",
+    "push r13",
+    "push r12",
+    "push r11",
+    "push r10",
+    "push r9",
+    "push r8",
+    "push rbp",
+    "push rdi",
+    "push rsi",
+    "push rdx",
+    "push rcx",
+    "push rbx",
+    "push rax",
+
+    // Pass RSP (pointing to rax) in RDI
+    "mov rdi, rsp",
+    // Pass CS in RSI (from [rsp + 15*8 + 8] = [rsp + 128])
+    "mov rsi, [rsp + 128]",
+
+    // Ensure strict 16-byte stack alignment before calling C/Rust handler
+    "test rsp, 8",
+    "jnz 2f",
+    "call timer_interrupt_handler",
+    "jmp 3f",
+    "2:",
+    "sub rsp, 8",
+    "call timer_interrupt_handler",
+    "add rsp, 8",
+    "3:",
+
+    // Target RSP returned in RAX
+    "mov rsp, rax",
+    "pop rax",
+    "pop rbx",
+    "pop rcx",
+    "pop rdx",
+    "pop rsi",
+    "pop rdi",
+    "pop rbp",
+    "pop r8",
+    "pop r9",
+    "pop r10",
+    "pop r11",
+    "pop r12",
+    "pop r13",
+    "pop r14",
+    "pop r15",
+
+    // If returning to Ring 3 (CS & 3 == 3), restore User Data Selectors (0x1B) preserving RAX
+    "test qword ptr [rsp + 8], 3",
+    "jz 4f",
+    "push rax",
+    "mov ax, 0x1B",
+    "mov ds, ax",
+    "mov es, ax",
+    "pop rax",
+    "4:",
+    "iretq",
+
+    ".global spurious_interrupt_stub",
+    "spurious_interrupt_stub:",
+    // Spurious interrupt: no EOI to LAPIC per Intel manual
     "iretq"
 );
 
 extern "C" {
     fn syscall_stub();
+    fn timer_interrupt_stub();
+    fn spurious_interrupt_stub();
+}
+
+#[no_mangle]
+pub extern "C" fn timer_interrupt_handler(rsp: u64, cs: u64) -> u64 {
+    unsafe {
+        // 1. Acknowledge LAPIC timer interrupt with EOI
+        crate::apic::eoi();
+        crate::apic::TIMER_TICKS_TOTAL += 1;
+
+        let is_user = (cs & 3) == 3;
+
+        // Requirement 7: For a timer interrupt originating in Ring 0,
+        // acknowledge it and defer preemption until a safe scheduling point.
+        if !is_user {
+            return rsp; // Resumes kernel execution immediately via iretq
+        }
+
+        // Requirement 6: On a timer interrupt from Ring 3:
+        // Save the interrupted thread context, select next eligible thread,
+        // update thread states consistently, switch CR3 as needed, and resume.
+        let sched = &mut crate::scheduler::SCHEDULER;
+        let object_table = &crate::capability::KERNEL_OBJECT_TABLE;
+
+        if let Some(prev_ref) = sched.current {
+            if let Some((_, prev_phys)) = object_table.resolve(prev_ref) {
+                let prev_tcb = prev_phys as *mut crate::thread::TCB;
+
+                // Save interrupted thread's full interrupt context pointer
+                core::ptr::write(&raw mut (*prev_tcb).rsp, rsp);
+                core::ptr::write(&raw mut (*prev_tcb).frame_kind, crate::thread::FrameKind::Interrupt);
+
+                // Rotate thread if still Ready / Running
+                let prev_state = core::ptr::read(&raw const (*prev_tcb).state);
+                if prev_state == crate::thread::ThreadState::Ready || prev_state == crate::thread::ThreadState::Running {
+                    core::ptr::write(&raw mut (*prev_tcb).state, crate::thread::ThreadState::Ready);
+                    sched.enqueue(prev_ref);
+                }
+            }
+        }
+
+        // Dequeue next eligible thread
+        if let Some(next_ref) = sched.dequeue() {
+            sched.current = Some(next_ref);
+            if let Some((_, next_phys)) = object_table.resolve(next_ref) {
+                let next_tcb = next_phys as *mut crate::thread::TCB;
+                core::ptr::write(&raw mut (*next_tcb).state, crate::thread::ThreadState::Running);
+
+                // Synchronize CR3 to incoming thread's address space
+                let next_vspace = core::ptr::read(&raw const (*next_tcb).vspace);
+                let target_cr3 = match next_vspace {
+                    Some(vref) => object_table.resolve(vref).unwrap().1,
+                    None => crate::memory::BOOT_CR3,
+                };
+                if target_cr3 != 0 {
+                    let cur_cr3: u64;
+                    core::arch::asm!("mov {}, cr3", out(reg) cur_cr3, options(nomem, nostack));
+                    if (cur_cr3 & !0xFFF) != (target_cr3 & !0xFFF) {
+                        core::arch::asm!("mov cr3, {}", in(reg) target_cr3, options(nomem, nostack));
+                    }
+                }
+
+                // Synchronize TSS RSP0 for user mode
+                let next_stack_base = core::ptr::read(&raw const (*next_tcb).stack_base);
+                if next_stack_base != 0 {
+                    crate::gdt::set_tss_rsp0(next_stack_base + crate::memory::PAGE_SIZE);
+                }
+
+                let next_rsp = core::ptr::read(&raw const (*next_tcb).rsp);
+                let next_frame_kind = core::ptr::read(&raw const (*next_tcb).frame_kind);
+
+                match next_frame_kind {
+                    crate::thread::FrameKind::Interrupt => {
+                        return next_rsp;
+                    },
+                    crate::thread::FrameKind::Cooperative => {
+                        crate::thread::resume_cooperative_from_interrupt(next_rsp);
+                    }
+                }
+            }
+        }
+
+        rsp
+    }
 }

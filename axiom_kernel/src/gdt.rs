@@ -5,7 +5,9 @@ use core::arch::asm;
 
 pub const KERNEL_CODE_SELECTOR: u16 = 0x08;
 pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
-pub const TSS_SELECTOR: u16 = 0x18;
+pub const USER_DATA_SELECTOR: u16   = 0x18 | 3; // 0x1B (DPL 3)
+pub const USER_CODE_SELECTOR: u16   = 0x20 | 3; // 0x23 (DPL 3)
+pub const TSS_SELECTOR: u16         = 0x28;
 
 pub const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
@@ -36,9 +38,10 @@ impl TaskStateSegment {
 
 // Allocate a 16 KiB emergency stack, strictly 16-byte aligned for x86-64
 #[repr(align(16))]
-struct DoubleFaultStack(#[allow(dead_code)] [u8; 16384]);
+struct EmergencyStack([u8; 16384]);
 
-static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; 16384]);
+static mut DOUBLE_FAULT_STACK: EmergencyStack = EmergencyStack([0; 16384]);
+static mut KERNEL_RSP0_STACK: EmergencyStack = EmergencyStack([0; 16384]);
 pub static mut TSS: TaskStateSegment = TaskStateSegment::new();
 
 #[repr(C, packed)]
@@ -47,23 +50,27 @@ pub struct GdtDescriptor {
     pub base: u64,
 }
 
-// 0: Null, 1: Code, 2: Data, 3 & 4: 16-byte TSS
-static mut GDT: [u64; 5] = [0; 5];
+// 0: Null, 1: Kernel Code, 2: Kernel Data, 3: User Data, 4: User Code, 5 & 6: 16-byte TSS
+static mut GDT: [u64; 7] = [0; 7];
 static mut GDTR: GdtDescriptor = GdtDescriptor { limit: 0, base: 0 };
 
 pub fn init() {
     unsafe {
-        // 1. Map the top of the emergency stack into IST slot 1
-        let stack_start = (&raw const DOUBLE_FAULT_STACK) as *const DoubleFaultStack as u64;
-        let stack_end = stack_start + 16384;
-        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX] = stack_end;
+        // 1. Map IST slot 1 (Double Fault) and Privilege Stack 0 (RSP0 for Ring 3 transitions)
+        let df_start = (&raw const DOUBLE_FAULT_STACK) as *const EmergencyStack as u64;
+        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX] = df_start + 16384;
+
+        let rsp0_start = (&raw const KERNEL_RSP0_STACK) as *const EmergencyStack as u64;
+        TSS.privilege_stack_table[0] = rsp0_start + 16384;
 
         // 2. Encode the GDT Entries
         GDT[0] = 0; // Null
-        GDT[1] = 0x00209A0000000000; // 0x08: Code (Present, Ring 0, Exec/Read, 64-bit)
-        GDT[2] = 0x0000920000000000; // 0x10: Data (Present, Ring 0, Read/Write)
+        GDT[1] = 0x00209A0000000000; // 0x08: Kernel Code (Present, Ring 0, Exec/Read, 64-bit)
+        GDT[2] = 0x0000920000000000; // 0x10: Kernel Data (Present, Ring 0, Read/Write)
+        GDT[3] = 0x0000F20000000000; // 0x18: User Data   (Present, Ring 3, Read/Write)
+        GDT[4] = 0x0020FA0000000000; // 0x20: User Code   (Present, Ring 3, Exec/Read, 64-bit)
 
-        // 0x18: 16-byte TSS Descriptor
+        // 0x28: 16-byte TSS Descriptor (Index 5 & 6)
         let tss_base = (&raw const TSS) as *const TaskStateSegment as u64;
         let tss_limit = (core::mem::size_of::<TaskStateSegment>() - 1) as u64;
 
@@ -76,11 +83,11 @@ pub fn init() {
         
         let tss_high = tss_base >> 32;
 
-        GDT[3] = tss_low;
-        GDT[4] = tss_high;
+        GDT[5] = tss_low;
+        GDT[6] = tss_high;
 
         // 3. Load the GDT
-        GDTR.limit = (core::mem::size_of::<[u64; 5]>() - 1) as u16;
+        GDTR.limit = (core::mem::size_of::<[u64; 7]>() - 1) as u16;
         GDTR.base = (&raw const GDT) as *const u64 as u64;
         
         asm!(
@@ -113,4 +120,8 @@ pub fn init() {
             options(nostack, preserves_flags)
         );
     }
+}
+
+pub unsafe fn set_tss_rsp0(rsp0: u64) {
+    TSS.privilege_stack_table[0] = rsp0;
 }

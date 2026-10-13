@@ -17,6 +17,22 @@ static mut VGA_ROW: isize = 2;
 
 pub fn ktest(name: &[u8], passed: bool) {
     unsafe {
+        // 1. Render to high-resolution graphics console if active
+        let console = &raw mut crate::console::CONSOLE;
+        if (*console).is_graphics {
+            if passed {
+                (*console).set_color(0x002EE59D, 0x00101418); // Crisp Emerald Green
+                (*console).write_str("[ PASS ] ");
+            } else {
+                (*console).set_color(0x00FF4B4B, 0x00101418); // Crimson Red
+                (*console).write_str("[ FAIL ] ");
+            }
+            (*console).set_color(0x00E0E0E0, 0x00101418); // Crisp White
+            (*console).write_bytes(name);
+            (*console).write_str("\n");
+        }
+
+        // 2. Dual-mode fallback: also update legacy 80x25 VGA text buffer
         let vga = 0xB8000 as *mut u8;
         let status = if passed { b"[ PASS ]" } else { b"[ FAIL ]" };
         let color  = if passed { 0x0A_u8  } else { 0x0C_u8  };
@@ -32,65 +48,70 @@ pub fn ktest(name: &[u8], passed: bool) {
         if !passed { core::arch::asm!("cli; hlt"); }
     }
 }
+
+pub fn print_header() {
+    unsafe {
+        let console = &raw mut crate::console::CONSOLE;
+        if (*console).is_graphics {
+            (*console).set_color(0x0000D2FF, 0x00101418); // Electric Cyan
+            (*console).write_str("================================================================================\n");
+            (*console).write_str(" AXIOM OS KERNEL SUBSTRATE (DEVELOPMENT MODE)\n");
+            (*console).write_str("================================================================================\n\n");
+        }
+
+        let vga = 0xB8000 as *mut u8;
+        for i in 0..2000 {
+            *vga.add(i * 2) = b' ';
+            *vga.add(i * 2 + 1) = 0x0F;
+        }
+        let header = b"AXIOM DEV SUBSTRATE";
+        for (i, &b) in header.iter().enumerate() {
+            *vga.offset(i as isize * 2) = b;
+            *vga.offset(i as isize * 2 + 1) = 0x0B;
+        }
+        let divider = b"===================";
+        for (i, &b) in divider.iter().enumerate() {
+            *vga.offset(160 + i as isize * 2) = b;
+            *vga.offset(160 + i as isize * 2 + 1) = 0x08;
+        }
+    }
+}
 // ---------------------------------------------------------------------
 
-extern "C" fn thread_b_entry() {
-    let vga = 0xB8000 as *mut u8;
-    let mut col = 0; // Local state preserved on Thread B's stack!
-    loop {
-        unsafe {
-            *vga.offset(160 * 14 + col * 2) = b'B';
-            *vga.offset(160 * 14 + col * 2 + 1) = 0x09; 
-            
-            col = (col + 1) % 80; // Move right, wrap at edge
-            
-            // Increased delay so human eyes can see the context switch
-            for _ in 0..5_000_000 { core::arch::asm!("nop"); }
-            scheduler::yield_thread(); 
-        }
-    }
-}
-
-extern "C" fn thread_c_entry() {
-    let vga = 0xB8000 as *mut u8;
-    let mut col = 0; // Local state preserved on Thread C's stack!
-    loop {
-        unsafe {
-            *vga.offset(160 * 15 + col * 2) = b'C';
-            *vga.offset(160 * 15 + col * 2 + 1) = 0x0C; 
-            
-            col = (col + 1) % 80;
-            
-            for _ in 0..5_000_000 { core::arch::asm!("nop"); }
-            scheduler::yield_thread(); 
-        }
-    }
-}
-
 extern "C" fn dev_thread_b() {
-    // Local variable stored on Thread B's stack/registers
-    let mut col: isize = 0;
+    let mut step = 0;
     loop {
         unsafe {
+            let console = &raw mut crate::console::CONSOLE;
+            if (*console).is_graphics && step % 50 == 0 {
+                (*console).set_color(0x002EE59D, 0x00101418);
+                (*console).write_str("[ DEV ] Thread B scheduled and alive\n");
+            }
             let vga = 0xB8000 as *mut u8;
-            *vga.offset(20 * 160 + col * 2) = b'B';
-            *vga.offset(20 * 160 + col * 2 + 1) = 0x0A; // Green
+            *vga.offset(20 * 160 + (step % 80) * 2) = b'B';
+            *vga.offset(20 * 160 + (step % 80) * 2 + 1) = 0x0A; // Green
         }
-        col += 1;
+        step += 1;
+        for _ in 0..3_000_000 { unsafe { core::arch::asm!("nop"); } }
         unsafe { crate::scheduler::yield_thread(); }
     }
 }
 
 extern "C" fn dev_thread_c() {
-    // Local variable stored on Thread C's stack/registers
-    let mut col: isize = 0;
+    let mut step = 0;
     loop {
         unsafe {
+            let console = &raw mut crate::console::CONSOLE;
+            if (*console).is_graphics && step % 50 == 0 {
+                (*console).set_color(0x00FFD166, 0x00101418);
+                (*console).write_str("[ DEV ] Thread C scheduled and alive\n");
+            }
             let vga = 0xB8000 as *mut u8;
-            *vga.offset(21 * 160 + col * 2) = b'C';
-            *vga.offset(21 * 160 + col * 2 + 1) = 0x0C; // Red
+            *vga.offset(21 * 160 + (step % 80) * 2) = b'C';
+            *vga.offset(21 * 160 + (step % 80) * 2 + 1) = 0x0C; // Red
         }
-        col += 1;
+        step += 1;
+        for _ in 0..3_000_000 { unsafe { core::arch::asm!("nop"); } }
         unsafe { crate::scheduler::yield_thread(); }
     }
 }
@@ -109,220 +130,206 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let len = end as usize - start as usize;
         core::ptr::write_bytes(start, 0, len);
         crate::console::CONSOLE.init(boot_info);
+        print_header();
 
-    let vga_buffer = 0xB8000 as *mut u8;
+        let vga_buffer = 0xB8000 as *mut u8;
 
-    // 1. Clear the entire screen to black
-    for i in 0..2000 {
-        unsafe {
-            *vga_buffer.add(i * 2) = b' ';
-            *vga_buffer.add(i * 2 + 1) = 0x0F;
-        }
-    }
+        // 1. Validate the physical pointer and magic number
+        let is_valid = unsafe { !boot_info.is_null() && (*boot_info).magic == 0xC0DEB007 };
+        ktest(b"Bootloader Handshake", is_valid);
 
-    // 1. Validate the physical pointer and magic number
-    let is_valid = unsafe { !boot_info.is_null() && (*boot_info).magic == 0xC0DEB007 };
+        if is_valid {
+            gdt::init();
+            interrupts::init();
+            unsafe { memory::init_boot_cr3(); }
+            let lapic_ok = unsafe { apic::init() };
+            ktest(b"Architecture & Syscall Gateway", true);
+            ktest(b"Local APIC & Calibrated Timer Armed", lapic_ok);
 
-    let message = if is_valid {
-        b"AXIOM KERNEL ONLINE [BOOT INFO VERIFIED]"
-    } else {
-        b"AXIOM KERNEL ONLINE [BOOT INFO FAILED]  "
-    };
+            let kernel_start_addr = core::ptr::addr_of!(KERNEL_START) as u64;
+            let kernel_end_addr = core::ptr::addr_of!(KERNEL_END) as u64;
 
-    // 2. Print the status to the top of the VGA buffer
-    let mut offset = 0;
-    for &byte in message.iter() {
-        *vga_buffer.add(offset) = byte;
-        *vga_buffer.add(offset + 1) = if is_valid { 0x0A } else { 0x0C };
-        offset += 2;
-    }
-    
-    //print_hex_64(is_valid as u64, 160 * 12, vga_buffer);
-    // 3. If valid, prove it by printing the memory map entry count
-    if is_valid {
-        gdt::init();
-        interrupts::init();
+            let mut bitmap_alloc = unsafe { memory::BitmapAllocator::bootstrap(
+                boot_info, kernel_start_addr, kernel_end_addr
+            ) };
+            ktest(b"Physical Frame Allocator", true);
 
-        let kernel_start_addr = core::ptr::addr_of!(KERNEL_START) as u64;
-        let kernel_end_addr = core::ptr::addr_of!(KERNEL_END) as u64;
+            // Re-establish our kernel data plane handles
+            let object_table = unsafe { &mut *core::ptr::addr_of_mut!(capability::KERNEL_OBJECT_TABLE) };
+            let cnode = unsafe { &mut *core::ptr::addr_of_mut!(capability::GENESIS_CNODE) };
+            ktest(b"Object Table & Root CNode", true);
 
-        //boot_allocator = unsafe { memory::FrameAllocator::new(boot_info) };
-        let mut bitmap_alloc = unsafe { memory::BitmapAllocator::bootstrap(
-            boot_info, kernel_start_addr, kernel_end_addr
-        ) };
+            let base_addr1 = bitmap_alloc.allocate_contiguous(4).unwrap();
+            let mut untyped1 = object::Untyped {
+                physical_base: base_addr1, size: 4096 * 4, watermark: 0,
+            };
+            ktest(b"Untyped Authority Established", true);
 
-        // ========================================================
-        // MILESTONE (BRICK #5B): COOPERATIVE SCHEDULER
-        // ========================================================
+            // 1. BOOTSTRAP GENESIS
+            let (genesis_ref, _) = capability::retype(
+                &mut untyped1, object::ObjectKind::TCB, object_table, cnode
+            ).unwrap();
+            
+            let (_, gen_phys) = object_table.resolve(genesis_ref).unwrap();
+            let genesis_tcb = unsafe { &mut *(gen_phys as *mut thread::TCB) };
+            
+            genesis_tcb.rsp = 0; 
+            genesis_tcb.state = thread::ThreadState::Running;
+            genesis_tcb.stack_base = 0x90000; 
+            genesis_tcb.vspace = None;
+            genesis_tcb.frame_kind = thread::FrameKind::Cooperative;
+            
+            unsafe { scheduler::SCHEDULER.current = Some(genesis_ref); }
+            ktest(b"Genesis TCB Bound", true);
 
-        // Re-establish our kernel data plane handles
-        let object_table = unsafe { &mut *core::ptr::addr_of_mut!(capability::KERNEL_OBJECT_TABLE) };
-        let cnode = unsafe { &mut *core::ptr::addr_of_mut!(capability::GENESIS_CNODE) };
+            // 2. CREATE THREAD B
+            let stack_b = bitmap_alloc.allocate_frame().unwrap();
+            let (ref_b, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+            let (_, phys_b) = object_table.resolve(ref_b).unwrap();
+            let tcb_b = unsafe { &mut *(phys_b as *mut thread::TCB) };
+            
+            tcb_b.state = thread::ThreadState::Ready;
+            tcb_b.stack_base = stack_b.start_address;
+            tcb_b.vspace = None;
+            tcb_b.frame_kind = thread::FrameKind::Cooperative;
+            tcb_b.rsp = thread::TCB::forge_stack(stack_b.start_address + memory::PAGE_SIZE, dev_thread_b as *const () as u64);
+            
+            unsafe { scheduler::SCHEDULER.enqueue(ref_b); }
+            ktest(b"Thread B Created & Scheduled", true);
 
-        let base_addr1 = bitmap_alloc.allocate_contiguous(1).unwrap();
-        let mut untyped1 = object::Untyped {
-            physical_base: base_addr1, size: 4096, watermark: 0,
-        };
+            // 3. CREATE THREAD C
+            let stack_c = bitmap_alloc.allocate_frame().unwrap();
+            let (ref_c, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+            let (_, phys_c) = object_table.resolve(ref_c).unwrap();
+            let tcb_c = unsafe { &mut *(phys_c as *mut thread::TCB) };
+            
+            tcb_c.state = thread::ThreadState::Ready;
+            tcb_c.stack_base = stack_c.start_address;
+            tcb_c.vspace = None;
+            tcb_c.frame_kind = thread::FrameKind::Cooperative;
+            tcb_c.rsp = thread::TCB::forge_stack(stack_c.start_address + memory::PAGE_SIZE, dev_thread_c as *const () as u64);
 
-        // 1. BOOTSTRAP GENESIS
-        let (genesis_ref, _) = capability::retype(
-            &mut untyped1, object::ObjectKind::TCB, object_table, cnode
-        ).unwrap();
-        
-        let (_, gen_phys) = object_table.resolve(genesis_ref).unwrap();
-        let genesis_tcb = unsafe { &mut *(gen_phys as *mut thread::TCB) };
-        
-        // Genesis's RSP is left uninitialized; it will be captured on the first yield.
-        genesis_tcb.rsp = 0; 
-        genesis_tcb.state = thread::ThreadState::Running;
-        // Metadata only: marks the pre-existing bootloader stack region
-        genesis_tcb.stack_base = 0x90000; 
-        
-        // Hand Genesis to the Scheduler
-        unsafe { scheduler::SCHEDULER.current = Some(genesis_ref); }
+            unsafe { scheduler::SCHEDULER.enqueue(ref_c); }
+            ktest(b"Thread C Created & Scheduled", true);
 
-        // 2. CREATE THREAD B
-        let stack_b = bitmap_alloc.allocate_frame().unwrap();
-        let (ref_b, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
-        let (_, phys_b) = object_table.resolve(ref_b).unwrap();
-        let tcb_b = unsafe { &mut *(phys_b as *mut thread::TCB) };
-        
-        tcb_b.state = thread::ThreadState::Ready;
-        tcb_b.stack_base = stack_b.start_address;
-        tcb_b.rsp = thread::TCB::forge_stack(stack_b.start_address + memory::PAGE_SIZE, thread_b_entry as u64);
-        
-        unsafe { scheduler::SCHEDULER.enqueue(ref_b); }
+            // ========================================================================
+            // BRICK #6A-B: STATEFUL RENDEZVOUS SEMANTICS
+            // ========================================================================
+            unsafe { VGA_ROW += 1; }
 
-        // 3. CREATE THREAD C
-        let stack_c = bitmap_alloc.allocate_frame().unwrap();
-        let (ref_c, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
-        let (_, phys_c) = object_table.resolve(ref_c).unwrap();
-        let tcb_c = unsafe { &mut *(phys_c as *mut thread::TCB) };
-        
-        tcb_c.state = thread::ThreadState::Ready;
-        tcb_c.stack_base = stack_c.start_address;
-        tcb_c.rsp = thread::TCB::forge_stack(stack_c.start_address + memory::PAGE_SIZE, thread_c_entry as u64);
+            // Allocate 4 dedicated test TCBs purely for synthetic state testing
+            let (ref_t1, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+            let (ref_t2, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+            let (ref_t3, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+            let (ref_t4, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+            
+            let mut ep = object::Endpoint::new();
 
-        unsafe { scheduler::SCHEDULER.enqueue(ref_c); }
+            let get_state = |tref: object::ObjectRef| -> thread::ThreadState {
+                let (_, phys) = object_table.resolve(tref).unwrap();
+                unsafe { core::ptr::read(&raw const (*(phys as *mut thread::TCB)).state) }
+            };
+            let get_payload = |tref: object::ObjectRef| -> u64 {
+                let (_, phys) = object_table.resolve(tref).unwrap();
+                unsafe { core::ptr::read(&raw const (*(phys as *mut thread::TCB)).ipc_payload) }
+            };
+            let set_ready = |tref: object::ObjectRef| {
+                let (_, phys) = object_table.resolve(tref).unwrap();
+                unsafe { core::ptr::write(&raw mut (*(phys as *mut thread::TCB)).state, thread::ThreadState::Ready); }
+            };
 
-    // ========================================================================
-    // BRICK #6A-B: STATEFUL RENDEZVOUS SEMANTICS
-    // ========================================================================
-    unsafe { VGA_ROW += 1; }
+            // Test A: Receiver calls RECEIVE (no sender)
+            let recv_a = ep.endpoint_receive(ref_t1, object_table);
+            ktest(b"Rendezvous A: Receiver blocks", recv_a.is_none() && get_state(ref_t1) == thread::ThreadState::BlockedReceive);
 
-    // Allocate 4 TCBs purely for state testing
-    let (ref_a, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
-    let (ref_b, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
-    let (ref_c, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
-    let (ref_d, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
-    
-    let mut ep = object::Endpoint::new();
+            // Test B: Sender calls SEND (wakes receiver A)
+            let send_b = ep.endpoint_send(ref_t2, 0x1111, object_table);
+            ktest(b"Rendezvous B: Sender wakes A, payload transfers", 
+                send_b == Some(ref_t1) && get_state(ref_t1) == thread::ThreadState::Ready && get_payload(ref_t1) == 0x1111);
 
-    let get_state = |tref: object::ObjectRef| -> thread::ThreadState {
-        let (_, phys) = object_table.resolve(tref).unwrap();
-        unsafe { core::ptr::read(&raw const (*(phys as *mut thread::TCB)).state) }
-    };
-    let get_payload = |tref: object::ObjectRef| -> u64 {
-        let (_, phys) = object_table.resolve(tref).unwrap();
-        unsafe { core::ptr::read(&raw const (*(phys as *mut thread::TCB)).ipc_payload) }
-    };
-    let set_ready = |tref: object::ObjectRef| {
-        let (_, phys) = object_table.resolve(tref).unwrap();
-        unsafe { core::ptr::write(&raw mut (*(phys as *mut thread::TCB)).state, thread::ThreadState::Ready); }
-    };
+            // Test C: Sender calls SEND (no receiver)
+            let send_c = ep.endpoint_send(ref_t3, 0x2222, object_table);
+            ktest(b"Rendezvous C: Sender blocks, holds payload", 
+                send_c.is_none() && get_state(ref_t3) == thread::ThreadState::BlockedSend && get_payload(ref_t3) == 0x2222);
 
-    // Test A: Receiver calls RECEIVE (no sender)
-    let recv_a = ep.endpoint_receive(ref_a, object_table);
-    ktest(b"Rendezvous A: Receiver blocks", recv_a.is_none() && get_state(ref_a) == thread::ThreadState::BlockedReceive);
+            // Test D: Receiver calls RECEIVE (wakes sender C)
+            let recv_d = ep.endpoint_receive(ref_t4, object_table);
+            ktest(b"Rendezvous D: Receiver wakes C, pulls payload", 
+                recv_d == Some(ref_t3) && get_state(ref_t3) == thread::ThreadState::Ready && get_payload(ref_t4) == 0x2222);
 
-    // Test B: Sender calls SEND (wakes receiver A)
-    let send_b = ep.endpoint_send(ref_b, 0x1111, object_table);
-    ktest(b"Rendezvous B: Sender wakes A, payload transfers", 
-        send_b == Some(ref_a) && get_state(ref_a) == thread::ThreadState::Ready && get_payload(ref_a) == 0x1111);
+            // Test E: FIFO Ordering (A and B block receive, C and D send)
+            ep.endpoint_receive(ref_t1, object_table);
+            ep.endpoint_receive(ref_t2, object_table);
+            
+            ep.endpoint_send(ref_t3, 0xC0DE, object_table);
+            ep.endpoint_send(ref_t4, 0xCAFE, object_table);
+            
+            ktest(b"Rendezvous E: Strict FIFO transfer order", 
+                get_payload(ref_t1) == 0xC0DE && get_payload(ref_t2) == 0xCAFE);
 
-    // Test C: Sender calls SEND (no receiver)
-    let send_c = ep.endpoint_send(ref_c, 0x2222, object_table);
-    ktest(b"Rendezvous C: Sender blocks, holds payload", 
-        send_c.is_none() && get_state(ref_c) == thread::ThreadState::BlockedSend && get_payload(ref_c) == 0x2222);
+            // ========================================================================
+            // BRICK #6B: RUNNABLE SCHEDULER STATE MACHINE
+            // ========================================================================
+            unsafe { VGA_ROW += 1; }
 
-    // Test D: Receiver calls RECEIVE (wakes sender C)
-    let recv_d = ep.endpoint_receive(ref_d, object_table);
-    ktest(b"Rendezvous D: Receiver wakes C, pulls payload", 
-        recv_d == Some(ref_c) && get_state(ref_c) == thread::ThreadState::Ready && get_payload(ref_d) == 0x2222);
+            // Test 1: Deterministic Enqueue/Dequeue
+            unsafe {
+                scheduler::SCHEDULER = scheduler::Scheduler::new();
+                set_ready(ref_t1); set_ready(ref_t2); set_ready(ref_t3);
 
-    // Test E: FIFO Ordering (A and B block receive, C and D send)
-    ep.endpoint_receive(ref_a, object_table);
-    ep.endpoint_receive(ref_b, object_table);
-    
-    ep.endpoint_send(ref_c, 0xC0DE, object_table);
-    ep.endpoint_send(ref_d, 0xCAFE, object_table);
-    
-    ktest(b"Rendezvous E: Strict FIFO transfer order", 
-        get_payload(ref_a) == 0xC0DE && get_payload(ref_b) == 0xCAFE);
+                scheduler::SCHEDULER.enqueue(ref_t1);
+                scheduler::SCHEDULER.enqueue(ref_t2);
+                scheduler::SCHEDULER.enqueue(ref_t3);
+                
+                let dq1 = scheduler::SCHEDULER.dequeue();
+                let dq2 = scheduler::SCHEDULER.dequeue();
+                let dq3 = scheduler::SCHEDULER.dequeue();
+                let dq4 = scheduler::SCHEDULER.dequeue();
+                
+                ktest(b"Sched 1: Pure FIFO Dequeue (A, B, C, None)", 
+                    dq1 == Some(ref_t1) && dq2 == Some(ref_t2) && dq3 == Some(ref_t3) && dq4 == None);
+            }
 
-    // ========================================================================
-    // BRICK #6B: RUNNABLE SCHEDULER STATE MACHINE
-    // ========================================================================
-    unsafe { VGA_ROW += 1; }
+            // Test 2: Blocking removes thread from run queue
+            unsafe {
+                scheduler::SCHEDULER = scheduler::Scheduler::new();
+                let mut ep2 = object::Endpoint::new();
+                set_ready(ref_t1); set_ready(ref_t2);
 
-    // Test 1: Deterministic Enqueue/Dequeue
-    unsafe {
-        scheduler::SCHEDULER = scheduler::Scheduler::new();
-        set_ready(ref_a); set_ready(ref_b); set_ready(ref_c);
+                scheduler::SCHEDULER.enqueue(ref_t2);
+                scheduler::SCHEDULER.current = Some(ref_t1);
 
-        scheduler::SCHEDULER.enqueue(ref_a);
-        scheduler::SCHEDULER.enqueue(ref_b);
-        scheduler::SCHEDULER.enqueue(ref_c);
-        
-        let dq1 = scheduler::SCHEDULER.dequeue();
-        let dq2 = scheduler::SCHEDULER.dequeue();
-        let dq3 = scheduler::SCHEDULER.dequeue();
-        let dq4 = scheduler::SCHEDULER.dequeue();
-        
-        ktest(b"Sched 1: Pure FIFO Dequeue (A, B, C, None)", 
-            dq1 == Some(ref_a) && dq2 == Some(ref_b) && dq3 == Some(ref_c) && dq4 == None);
-    }
+                // A executes RECEIVE and blocks.
+                let woke_peer = ep2.endpoint_receive(ref_t1, object_table);
+                if let Some(peer) = woke_peer { scheduler::SCHEDULER.enqueue(peer); }
+                
+                scheduler::SCHEDULER.current = scheduler::SCHEDULER.dequeue();
+                
+                ktest(b"Sched 2: Blocked thread yields CPU to B", 
+                    scheduler::SCHEDULER.current == Some(ref_t2) && get_state(ref_t1) == thread::ThreadState::BlockedReceive);
+            }
 
-    // Test 2: Blocking removes thread from run queue
-    unsafe {
-        scheduler::SCHEDULER = scheduler::Scheduler::new();
-        let mut ep2 = object::Endpoint::new();
-        set_ready(ref_a); set_ready(ref_b);
+            // Test 3: Rendezvous enqueues woken thread
+            unsafe {
+                scheduler::SCHEDULER = scheduler::Scheduler::new();
+                let mut ep3 = object::Endpoint::new();
+                set_ready(ref_t1); set_ready(ref_t2);
 
-        scheduler::SCHEDULER.enqueue(ref_b);
-        scheduler::SCHEDULER.current = Some(ref_a);
+                // Force A to block first
+                ep3.endpoint_receive(ref_t1, object_table);
+                scheduler::SCHEDULER.current = Some(ref_t2);
 
-        // A executes RECEIVE and blocks.
-        let woke_peer = ep2.endpoint_receive(ref_a, object_table);
-        if let Some(peer) = woke_peer { scheduler::SCHEDULER.enqueue(peer); }
-        
-        scheduler::SCHEDULER.current = scheduler::SCHEDULER.dequeue();
-        
-        ktest(b"Sched 2: Blocked thread yields CPU to B", 
-            scheduler::SCHEDULER.current == Some(ref_b) && get_state(ref_a) == thread::ThreadState::BlockedReceive);
-    }
-
-    // Test 3: Rendezvous enqueues woken thread
-    unsafe {
-        scheduler::SCHEDULER = scheduler::Scheduler::new();
-        let mut ep3 = object::Endpoint::new();
-        set_ready(ref_a); set_ready(ref_b);
-
-        // Force A to block first
-        ep3.endpoint_receive(ref_a, object_table);
-        scheduler::SCHEDULER.current = Some(ref_b);
-
-        // B executes SEND, waking A.
-        let woke_peer = ep3.endpoint_send(ref_b, 0x7777, object_table);
-        if let Some(peer) = woke_peer { scheduler::SCHEDULER.enqueue(peer); }
-        
-        // B stays in rotation
-        scheduler::SCHEDULER.enqueue(ref_b);
-        scheduler::SCHEDULER.current = scheduler::SCHEDULER.dequeue();
-        
-        ktest(b"Sched 3: Rendezvous wakes A and schedules it", 
-            scheduler::SCHEDULER.current == Some(ref_a) && get_payload(ref_a) == 0x7777);
-    }
+                // B executes SEND, waking A.
+                let woke_peer = ep3.endpoint_send(ref_t2, 0x7777, object_table);
+                if let Some(peer) = woke_peer { scheduler::SCHEDULER.enqueue(peer); }
+                
+                // B stays in rotation
+                scheduler::SCHEDULER.enqueue(ref_t2);
+                scheduler::SCHEDULER.current = scheduler::SCHEDULER.dequeue();
+                
+                ktest(b"Sched 3: Rendezvous wakes A and schedules it", 
+                    scheduler::SCHEDULER.current == Some(ref_t1) && get_payload(ref_t1) == 0x7777);
+            }
 
     unsafe { VGA_ROW += 1; }
 
@@ -337,18 +344,22 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let (_, phys_b) = object_table.resolve(ref_b).unwrap();
         let tcb_b = phys_b as *mut thread::TCB;
         core::ptr::write(&raw mut (*tcb_b).state, thread::ThreadState::Ready);
+        core::ptr::write(&raw mut (*tcb_b).vspace, None);
+        core::ptr::write(&raw mut (*tcb_b).frame_kind, thread::FrameKind::Cooperative);
         let rsp_b = thread::TCB::forge_stack(
             core::ptr::read(&raw const (*tcb_b).stack_base) + memory::PAGE_SIZE, 
-            dev_thread_b as u64
+            dev_thread_b as *const () as u64
         );
         core::ptr::write(&raw mut (*tcb_b).rsp, rsp_b);
 
         let (_, phys_c) = object_table.resolve(ref_c).unwrap();
         let tcb_c = phys_c as *mut thread::TCB;
         core::ptr::write(&raw mut (*tcb_c).state, thread::ThreadState::Ready);
+        core::ptr::write(&raw mut (*tcb_c).vspace, None);
+        core::ptr::write(&raw mut (*tcb_c).frame_kind, thread::FrameKind::Cooperative);
         let rsp_c = thread::TCB::forge_stack(
             core::ptr::read(&raw const (*tcb_c).stack_base) + memory::PAGE_SIZE, 
-            dev_thread_c as u64
+            dev_thread_c as *const () as u64
         );
         core::ptr::write(&raw mut (*tcb_c).rsp, rsp_c);
 
@@ -362,6 +373,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             let vga = 0xB8000 as *mut u8;
             *vga.offset(VGA_ROW * 160 + i as isize * 2) = b;
             *vga.offset(VGA_ROW * 160 + i as isize * 2 + 1) = 0x0E;
+        }
+        let console = &raw mut crate::console::CONSOLE;
+        if (*console).is_graphics {
+            (*console).set_color(0x00FFD166, 0x00101418); // Gold Yellow
+            (*console).write_str("\nGenesis yielding to live threads...\n\n");
         }
 
         loop {

@@ -9,6 +9,7 @@
 // ============================================================================
 #![no_std]
 #![no_main]
+#![allow(static_mut_refs, dead_code, unused_variables, unused_unsafe, unused_imports)]
 
 mod interrupts;
 mod gdt;
@@ -18,6 +19,7 @@ mod capability;
 mod thread;
 mod scheduler;
 mod console;
+mod apic;
 
 #[cfg(not(feature = "prod-mode"))]
 include!("main_dev.rs");

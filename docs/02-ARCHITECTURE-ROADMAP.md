@@ -30,37 +30,50 @@ We are utilizing a **Laboratory-First Strategy**:
 
 ## 3. Phased Roadmap
 
-### Phase 0: The Verifiable Object Machine (Current)
-*Status: In Progress / Hardening*
-- [x] Capability object hashing and DAG traversal.
-- [x] Attenuation invariants and causal epoch ordering.
-- [x] Silicon Root and Cryptographic Provenance.
-- [x] Transactional `CapabilityStore` issuance API.
-- [ ] Membrane limits (mutable state / invocation counters).
+### Phase 1: Sovereign Boot & Architecture Substrate
+*Status: Completed*
+- [x] UEFI Bootloader (`axiom_boot`) with GOP high-resolution graphics and memory map passing.
+- [x] Legacy BIOS Stage 1 & Stage 2 fallback bootloader.
+- [x] GDT with 64-bit kernel and user descriptors, TSS with IST stacks.
+- [x] IDT with exception handling, `#DF` on dedicated IST stack, `#PF` trap.
+- [x] Physical memory bitmap allocator.
 
-### Phase 1: Bare-Metal Transition
-*Status: Planned*
-- Custom Bootloader and hardware initialization.
-- CPU setup, Interrupts, and Exceptions.
-- Physical and Virtual Memory Management.
-- Transitioning `axiom_core` to `no_std`.
-- The Ring 0 Capability Kernel.
+### Phase 2: Object Model & Capability Foundations
+*Status: Completed*
+- [x] Retype model: `Untyped` authority ledger partitioning physical memory.
+- [x] Kernel object accounting: `TCB`, `Endpoint`, `CNode`, `VSpace`.
+- [x] Generational capability slots and handle encoding `(slot, generation)`.
+- [x] Intrusive FIFO wait queues for synchronous rendezvous IPC.
 
-### Phase 2: System Foundations
-*Status: Planned*
-- **IPC:** Inter-process communication routed strictly through capability invocations.
-- **VGOS (Verifiable Graph Object Store):** The Axiom filesystem. A persistent, versioned Merkle-DAG where file access is identical to capability access.
-- **Network Domain (RCaps):** Treating network connections not as magical external memory, but as cryptographically secure bridges between capability domains.
+### Phase 3: Virtual Memory & Privilege Isolation (VSpace)
+*Status: Completed*
+- [x] Sovereign PML4 page table construction from physical memory.
+- [x] Kernel supervisor huge page isolation (`0x0000_0000 - 0x001F_FFFF`, `U/S = 0`).
+- [x] Dynamic CR3 address space switching per thread.
+- [x] Ring 3 privilege boundary enforcement (`CPL = 3`).
+- [x] `#PF` fault trap (Vector 14, error code `0x05`) with clean thread termination.
 
-### Phase 3: User Space & The Axiom Experience
-*Status: Planned*
-- **Observatory:** The native system debugger. A live visualizer for the capability graph, allowing real-time inspection of membranes, lineage, and authority propagation. 
-- **AxSH:** The Axiom Shell.
-- **Compositor & GUI:** A capability-secured display server where surface regions and input events are routed via membrane-constrained capabilities.
-- **Package Manager:** Software distribution driven by capability signatures.
+### Phase 4: Local APIC Timer, Preemption & Stress Hardening
+*Status: Completed*
+- [x] Local APIC detection via `IA32_APIC_BASE` MSR (`0x1B`) and legacy 8259 PIC masking.
+- [x] PIT Channel 2 hardware calibration (10 ms countdown).
+- [x] Periodic timer on Vector `0x20` with Spurious Vector `0xFF`.
+- [x] Ring 3 preemption with safe Ring 0 deferral.
+- [x] Dual-frame context switching (`FrameKind::Cooperative` vs `FrameKind::Interrupt`).
+- [x] Dynamic `TSS.privilege_stack_table[0]` (`RSP0`) retargeting per thread.
+- [x] 16-byte System V stack alignment and user segment selector restoration.
+- [x] Stress suite: 50x syscalls under timer IRQ, 25+ preemption ticks, thread lifecycle/reuse, stack canaries.
 
-### Phase 4: Self-Hosting & Recovery
+### Phase 5: Capability System Call ABI (Next)
+*Status: Upcoming*
+- [ ] Hardware `syscall`/`sysret` MSR initialization (`STAR`, `LSTAR`, `SFMASK`).
+- [ ] Fast-path capability invocation protocol.
+- [ ] Capability Derivation Tree (CDT) and recursive revocation.
+- [ ] Microkernel boundary freeze.
+
+### Phase 6+: User-Space OS & Toolchain Execution
 *Status: Planned*
-- **State Collapse & Replay:** Treating corruption as an ontological paradox. The OS heals by collapsing corrupted state and replaying verifiable history from a known-good epoch.
-- **Hot-Swapping:** Upgrading core components dynamically by shifting capability roots.
-- Building Axiom OS on Axiom OS.
+- **Phase 6**: Root Task (`Init`), Embedded Ramdisk, & ELF64 Loader.
+- **Phase 7**: Microkernel Services (GOP Terminal Server, PS/2 Keyboard, Storage/VFS).
+- **Phase 8**: Authentication & Cryptographic Login Subsystem.
+- **Phase 9**: The Sovereign Shell (AxSH), C/musl runtime, and Native C/ASM compilation.
