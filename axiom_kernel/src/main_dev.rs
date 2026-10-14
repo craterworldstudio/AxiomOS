@@ -177,6 +177,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             genesis_tcb.state = thread::ThreadState::Running;
             genesis_tcb.stack_base = 0x90000; 
             genesis_tcb.vspace = None;
+            genesis_tcb.cspace = None;
             genesis_tcb.frame_kind = thread::FrameKind::Cooperative;
             
             unsafe { scheduler::SCHEDULER.current = Some(genesis_ref); }
@@ -191,6 +192,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             tcb_b.state = thread::ThreadState::Ready;
             tcb_b.stack_base = stack_b.start_address;
             tcb_b.vspace = None;
+            tcb_b.cspace = None;
             tcb_b.frame_kind = thread::FrameKind::Cooperative;
             tcb_b.rsp = thread::TCB::forge_stack(stack_b.start_address + memory::PAGE_SIZE, dev_thread_b as *const () as u64);
             
@@ -206,6 +208,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             tcb_c.state = thread::ThreadState::Ready;
             tcb_c.stack_base = stack_c.start_address;
             tcb_c.vspace = None;
+            tcb_c.cspace = None;
             tcb_c.frame_kind = thread::FrameKind::Cooperative;
             tcb_c.rsp = thread::TCB::forge_stack(stack_c.start_address + memory::PAGE_SIZE, dev_thread_c as *const () as u64);
 
@@ -345,6 +348,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let tcb_b = phys_b as *mut thread::TCB;
         core::ptr::write(&raw mut (*tcb_b).state, thread::ThreadState::Ready);
         core::ptr::write(&raw mut (*tcb_b).vspace, None);
+        core::ptr::write(&raw mut (*tcb_b).cspace, None);
         core::ptr::write(&raw mut (*tcb_b).frame_kind, thread::FrameKind::Cooperative);
         let rsp_b = thread::TCB::forge_stack(
             core::ptr::read(&raw const (*tcb_b).stack_base) + memory::PAGE_SIZE, 
@@ -356,6 +360,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let tcb_c = phys_c as *mut thread::TCB;
         core::ptr::write(&raw mut (*tcb_c).state, thread::ThreadState::Ready);
         core::ptr::write(&raw mut (*tcb_c).vspace, None);
+        core::ptr::write(&raw mut (*tcb_c).cspace, None);
         core::ptr::write(&raw mut (*tcb_c).frame_kind, thread::FrameKind::Cooperative);
         let rsp_c = thread::TCB::forge_stack(
             core::ptr::read(&raw const (*tcb_c).stack_base) + memory::PAGE_SIZE, 

@@ -28,6 +28,12 @@ impl Scheduler {
         self.tail = (self.tail + 1) % MAX_READY;
     }
 
+    /// Fast-path timeslice donation / direct switch for synchronous RPC rendezvous
+    pub fn enqueue_front(&mut self, thread: ObjectRef) {
+        self.head = (self.head + MAX_READY - 1) % MAX_READY;
+        self.queue[self.head] = Some(thread);
+    }
+
     pub fn dequeue(&mut self) -> Option<ObjectRef> {
         if self.head == self.tail {
             return None;
@@ -87,10 +93,12 @@ pub unsafe fn yield_thread() {
                 }
             }
 
-            // Synchronize TSS RSP0 for user mode transitions
+            // Synchronize TSS RSP0 and CpuLocal.kernel_rsp for user mode transitions
             let next_stack_base = core::ptr::read(&raw const (*next_tcb_ptr).stack_base);
             if next_stack_base != 0 {
-                crate::gdt::set_tss_rsp0(next_stack_base + crate::memory::PAGE_SIZE);
+                let kstack_top = next_stack_base + crate::memory::PAGE_SIZE;
+                crate::gdt::set_tss_rsp0(kstack_top);
+                crate::syscall::set_cpu_kernel_stack(kstack_top);
             }
 
             // 4. Distinguish context frame kind

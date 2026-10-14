@@ -95,32 +95,40 @@ static mut INVALID_HANDLE: u64 = 0;
 
 extern "C" fn thread_b_entry() {
     unsafe {
-        // Perform a synchronous SEND on the shared Endpoint.
-        // If no receiver is waiting yet, the handler will block this thread and yield.
-        // When Thread C calls OP_RECEIVE the rendezvous completes and we resume here.
-        let result = invoke_syscall(VALID_HANDLE, capability::OP_SEND, 0xCAFE_BABE, 0);
-        crate::ktest(b"Thread B: OP_SEND completed", result == capability::SYSCALL_OK);
+        // Perform an atomic RPC OP_CALL on the shared Endpoint.
+        // Thread C is waiting on OP_RECEIVE.
+        // OP_CALL delivers 0xCAFE_BABE, wakes Thread C, and atomically blocks Thread B waiting for reply.
+        let result = invoke_syscall(VALID_HANDLE, capability::OP_CALL, 0xCAFE_BABE, 0);
+        crate::ktest(b"Thread B: Atomic OP_CALL completed", result == capability::SYSCALL_OK);
+
+        let my_ref = crate::scheduler::SCHEDULER.current.unwrap();
+        let (_, phys) = crate::capability::KERNEL_OBJECT_TABLE.resolve(my_ref).unwrap();
+        let tcb = &*(phys as *const crate::thread::TCB);
+        crate::ktest(b"Thread B: RPC Reply Received (0xFEEDFACE)", tcb.ipc_payload == 0xFEED_FACE);
         loop { crate::scheduler::yield_thread(); }
     }
 }
 
 extern "C" fn thread_c_entry() {
     unsafe {
-        // Perform a synchronous RECEIVE on the shared Endpoint.
-        // If Thread B is already blocked-send the rendezvous fires immediately.
-        // Otherwise this thread blocks until B sends.
+        // Step 1: Perform a synchronous RECEIVE on the shared Endpoint.
+        // Thread C receives the OP_CALL request (0xCAFE_BABE).
         let result = invoke_syscall(VALID_HANDLE, capability::OP_RECEIVE, 0, 0);
         crate::ktest(b"Thread C: OP_RECEIVE completed", result == capability::SYSCALL_OK);
 
-        // Verify the payload was delivered into this thread's TCB ipc_payload field.
+        // Verify the request payload was delivered into this thread's TCB ipc_payload field.
         let my_ref = crate::scheduler::SCHEDULER.current.unwrap();
         let (_, phys) = crate::capability::KERNEL_OBJECT_TABLE.resolve(my_ref).unwrap();
         let tcb = &*(phys as *const crate::thread::TCB);
         crate::ktest(b"Thread C: payload==0xCAFEBABE", tcb.ipc_payload == 0xCAFE_BABE);
 
-        // Synchronous rendezvous with User Thread E (Ring 3 IPC)
+        // Step 2: Reply to Thread B via OP_SEND (delivers 0xFEEDFACE to Thread B).
+        let reply_res = invoke_syscall(VALID_HANDLE, capability::OP_SEND, 0xFEED_FACE, 0);
+        crate::ktest(b"Thread C: RPC Reply Sent (0xFEEDFACE)", reply_res == capability::SYSCALL_OK);
+
+        // Step 3: Synchronous rendezvous with User Thread E (Ring 3 Hardware Syscall)
         let result2 = invoke_syscall(VALID_HANDLE, capability::OP_RECEIVE, 0, 0);
-        crate::ktest(b"Thread C: User IPC Received (0x1337BEEF)", result2 == capability::SYSCALL_OK);
+        crate::ktest(b"Thread C: User Syscall Received (0x1337BEEF)", result2 == capability::SYSCALL_OK);
         crate::ktest(b"Thread C: payload==0x1337BEEF", tcb.ipc_payload == 0x1337_BEEF);
 
         loop { crate::scheduler::yield_thread(); }
@@ -221,10 +229,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     // 1. ARCHITECTURE INIT
     gdt::init();
     interrupts::init();
-    unsafe { memory::init_boot_cr3(); }
+    unsafe { 
+        memory::init_boot_cr3(); 
+        syscall::init();
+    }
     let lapic_ok = unsafe { apic::init() };
     ktest(b"Architecture & Syscall Gateway", true);
     ktest(b"GDT Ring-3 Descriptors & TSS RSP0 Active", true);
+    ktest(b"Hardware Syscall MSRs (EFER/STAR/LSTAR/SFMASK)", true);
+    ktest(b"Per-CPU Kernel Stack & SWAPGS Gateway Active", true);
     ktest(b"IDT 0x80 DPL-3 User Gateway Active", true);
     ktest(b"Page Fault (#PF Vector 14) Trap Armed", true);
     ktest(b"Local APIC & Calibrated Timer Armed", lapic_ok);
@@ -243,9 +256,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     let cnode = unsafe { &mut *core::ptr::addr_of_mut!(capability::GENESIS_CNODE) };
     ktest(b"Object Table & Root CNode", true);
 
-    let base_addr1 = bitmap_alloc.allocate_contiguous(16).unwrap();
+    let base_addr1 = bitmap_alloc.allocate_contiguous(64).unwrap();
     let mut untyped1 = object::Untyped {
-        physical_base: base_addr1, size: 4096 * 16, watermark: 0,
+        physical_base: base_addr1, size: 4096 * 64, watermark: 0,
     };
     ktest(b"Untyped Authority Established", true);
 
@@ -328,6 +341,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(&raw mut (*genesis_tcb).state, thread::ThreadState::Running);
         core::ptr::write(&raw mut (*genesis_tcb).stack_base, 0x90000);
         core::ptr::write(&raw mut (*genesis_tcb).vspace, None);
+        core::ptr::write(&raw mut (*genesis_tcb).cspace, None);
         core::ptr::write(&raw mut (*genesis_tcb).frame_kind, thread::FrameKind::Cooperative);
 
         scheduler::SCHEDULER.current = Some(genesis_ref);
@@ -354,6 +368,64 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         VALID_HANDLE   = CapHandle::new(ep_slot as u32, 1).0;
         INVALID_HANDLE = CapHandle::new((ep_slot + 99) as u32, 1).0; // guaranteed empty slot
     }
+
+    // ========================================================================
+    // PHASE 5: CAPABILITY DERIVATION TREE (CDT) & RIGHTS MONOTONICITY
+    // ========================================================================
+    unsafe { VGA_ROW += 1; }
+    let (ep_cdt_ref, ep_cdt_slot) = capability::retype(
+        &mut untyped1, object::ObjectKind::Endpoint, object_table, cnode
+    ).unwrap();
+
+    // 1. Monotonic Rights Attenuation (ALL -> READ)
+    let child_slot = cnode.find_free_slot().unwrap();
+    let child_handle = cnode.mint(ep_cdt_slot, child_slot, capability::Rights::READ).unwrap();
+    ktest(b"CDT: Monotonic Rights Attenuation (ALL -> READ)", child_handle.0 != 0);
+
+    // 2. Rights Escalation Blocked (READ cannot mint WRITE)
+    let bad_slot = cnode.find_free_slot().unwrap();
+    let escalation_res = cnode.mint(child_slot, bad_slot, capability::Rights::WRITE);
+    ktest(b"CDT: Escalation Blocked (Monotonicity Invariant)", escalation_res == Err(capability::ERR_INVALID_RIGHTS));
+
+    // 3. Attenuated Rights Enforcement during invocation (READ cannot OP_SEND)
+    let forbidden_op = capability::sys_invoke_handler(child_handle.0, capability::OP_SEND, 0x1234, 0, 0, 0);
+    ktest(b"CDT: Attenuated Rights Enforced (OP_SEND Blocked)", forbidden_op == capability::ERR_INVALID_RIGHTS);
+
+    // 4. Recursive Revocation Invalidates Descendants
+    let revoke_res = cnode.revoke(ep_cdt_slot);
+    ktest(b"CDT: Recursive OP_REVOKE Succeeded", revoke_res.is_ok());
+    let stale_op = capability::sys_invoke_handler(child_handle.0, capability::OP_RECEIVE, 0, 0, 0, 0);
+    ktest(b"CDT: Descendant Invalidated (ERR_STALE_HANDLE)", stale_op == capability::ERR_STALE_HANDLE);
+
+    // 5. Parent Slot Retained after Revocation
+    let parent_valid = cnode.slots[ep_cdt_slot].capability.is_some();
+    ktest(b"CDT: Parent Authority Retained After Revocation", parent_valid);
+
+    // 6. OP_DELETE Unlinks & Generational Invalidation
+    let child_del_slot = cnode.find_free_slot().unwrap();
+    let child_del_handle = cnode.mint(ep_cdt_slot, child_del_slot, capability::Rights::READ).unwrap();
+    let delete_res = cnode.delete(child_del_slot);
+    let del_op = capability::sys_invoke_handler(child_del_handle.0, capability::OP_RECEIVE, 0, 0, 0, 0);
+    ktest(b"CDT: OP_DELETE Unlinks & Invalidates Slot", delete_res.is_ok() && del_op == capability::ERR_STALE_HANDLE);
+
+    // 7. Per-Thread Private CNode (CSpace Isolation)
+    let (priv_cnode_ref, _) = capability::retype(
+        &mut untyped1, object::ObjectKind::CNode, object_table, cnode
+    ).unwrap();
+    let (_, priv_cnode_phys) = object_table.resolve(priv_cnode_ref).unwrap();
+    let priv_cnode = unsafe {
+        let ptr = priv_cnode_phys as *mut capability::CNode;
+        core::ptr::write(ptr, capability::CNode::new());
+        &mut *ptr
+    };
+    let priv_slot = priv_cnode.find_free_slot().unwrap();
+    priv_cnode.slots[priv_slot].insert(capability::Capability {
+        object: ep_cdt_ref,
+        kind: object::ObjectKind::Endpoint,
+        rights: capability::Rights::ALL,
+    });
+    ktest(b"CSpace: Private CNode Isolation Instantiated", priv_cnode.slots[priv_slot].capability.is_some());
+    unsafe { VGA_ROW += 1; }
 
     // ========================================================================
     // STRESS SUITE: THREAD TERMINATION, LIFECYCLE & FRAME REUSE
@@ -406,6 +478,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(&raw mut (*tcb_b).state, thread::ThreadState::Ready);
         core::ptr::write(&raw mut (*tcb_b).stack_base, stack_b.start_address);
         core::ptr::write(&raw mut (*tcb_b).vspace, None);
+        core::ptr::write(&raw mut (*tcb_b).cspace, None);
         core::ptr::write(&raw mut (*tcb_b).frame_kind, thread::FrameKind::Cooperative);
         core::ptr::write(
             &raw mut (*tcb_b).rsp,
@@ -414,7 +487,6 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 thread_b_entry as *const () as u64,
             ),
         );
-        scheduler::SCHEDULER.enqueue(ref_b);
     }
 
     // 3. Spawn Thread C (OP_RECEIVE — rendezvous partner for Thread B & User Thread)
@@ -429,6 +501,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(&raw mut (*tcb_c).state, thread::ThreadState::Ready);
         core::ptr::write(&raw mut (*tcb_c).stack_base, stack_c.start_address);
         core::ptr::write(&raw mut (*tcb_c).vspace, None);
+        core::ptr::write(&raw mut (*tcb_c).cspace, None);
         core::ptr::write(&raw mut (*tcb_c).frame_kind, thread::FrameKind::Cooperative);
         core::ptr::write(
             &raw mut (*tcb_c).rsp,
@@ -437,7 +510,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 thread_c_entry as *const () as u64,
             ),
         );
+
+        // Enqueue Thread C first so it is waiting in OP_RECEIVE when Thread B executes OP_CALL
         scheduler::SCHEDULER.enqueue(ref_c);
+        scheduler::SCHEDULER.enqueue(ref_b);
     }
 
     // 4. Spawn Thread D (bad-handle rejection test)
@@ -452,6 +528,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(&raw mut (*tcb_d).state, thread::ThreadState::Ready);
         core::ptr::write(&raw mut (*tcb_d).stack_base, stack_d.start_address);
         core::ptr::write(&raw mut (*tcb_d).vspace, None);
+        core::ptr::write(&raw mut (*tcb_d).cspace, None);
         core::ptr::write(&raw mut (*tcb_d).frame_kind, thread::FrameKind::Cooperative);
         core::ptr::write(
             &raw mut (*tcb_d).rsp,
@@ -475,65 +552,65 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     let user_code_frame = bitmap_alloc.allocate_frame().unwrap();
     let user_stack_frame = bitmap_alloc.allocate_frame().unwrap();
 
-    // Write enhanced user payload (91 bytes):
-    // 1. Initial rendezvous send (0x1337BEEF)
-    // 2. 50 rapid syscall probes under active LAPIC timer IRQ
+    // Write enhanced user payload (93 bytes):
+    // 1. Initial rendezvous send (0x1337BEEF) via hardware fast-path 'syscall' instruction
+    // 2. 50 rapid 'syscall' probes under active LAPIC timer IRQ (testing swapgs & sysretq)
     // 3. High-frequency spin loop updating progress counter
-    // 4. Supervisor memory probe (0x100000) triggering #PF after preemption
+    // 4. Supervisor memory probe (0x100000) triggering #PF after multi-tick preemption
     let user_code_ptr = user_code_frame.start_address as *mut u8;
-    let mut payload: [u8; 91] = [
+    let mut payload: [u8; 93] = [
         // 0..10: mov rdi, VALID_HANDLE
         0x48, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         // 10..15: mov esi, 0 (OP_SEND)
         0xBE, 0x00, 0x00, 0x00, 0x00,
-        // 15..20: mov edx, 0x1337BEEF
+        // 15..20: mov edx, 0x1337BEEF (arg1)
         0xBA, 0xEF, 0xBE, 0x37, 0x13,
-        // 20..22: xor ecx, ecx
-        0x31, 0xC9,
-        // 22..24: int 0x80 (Initial rendezvous with Thread C)
-        0xCD, 0x80,
+        // 20..23: xor r10d, r10d (arg2)
+        0x45, 0x31, 0xD2,
+        // 23..25: syscall (Hardware MSR Gateway!)
+        0x0F, 0x05,
 
-        // 24..30: mov r12d, 50 (50 rapid syscall probes under active timer)
+        // 25..31: mov r12d, 50 (50 rapid syscall probes under active timer)
         0x41, 0xBC, 0x32, 0x00, 0x00, 0x00,
-        // 30..40: 1: mov rdi, INVALID_HANDLE
+        // 31..41: 1: mov rdi, INVALID_HANDLE
         0x48, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // 40..45: mov esi, 0
+        // 41..46: mov esi, 0
         0xBE, 0x00, 0x00, 0x00, 0x00,
-        // 45..47: xor edx, edx
+        // 46..48: xor edx, edx
         0x31, 0xD2,
-        // 47..49: xor ecx, ecx
-        0x31, 0xC9,
-        // 49..51: int 0x80
-        0xCD, 0x80,
-        // 51..54: dec r12d
+        // 48..51: xor r10d, r10d
+        0x45, 0x31, 0xD2,
+        // 51..53: syscall (Hardware MSR Gateway!)
+        0x0F, 0x05,
+        // 53..56: dec r12d
         0x41, 0xFF, 0xCC,
-        // 54..56: jnz 1b (-26 bytes)
-        0x75, 0xE6,
+        // 56..58: jnz 1b (-27 bytes: 31 - 58 = -27 = 0xE5)
+        0x75, 0xE5,
 
-        // 56..63: 2: inc dword ptr [0x400804] (Progress counter)
+        // 58..65: 2: inc dword ptr [0x400804] (Progress counter)
         0xFF, 0x04, 0x25, 0x04, 0x08, 0x40, 0x00,
-        // 63..70: mov eax, [0x400800]
+        // 65..72: mov eax, [0x400800]
         0x8B, 0x04, 0x25, 0x00, 0x08, 0x40, 0x00,
-        // 70..73: cmp eax, 1
+        // 72..75: cmp eax, 1
         0x83, 0xF8, 0x01,
-        // 73..75: je 3f (+4 bytes)
+        // 75..77: je 3f (+4 bytes)
         0x74, 0x04,
-        // 75..77: pause
+        // 77..79: pause
         0xF3, 0x90,
-        // 77..79: jmp 2b (-23 bytes)
+        // 79..81: jmp 2b (-23 bytes: 58 - 81 = -23 = 0xE9)
         0xEB, 0xE9,
 
-        // 79..84: 3: mov ebx, 0x100000
+        // 81..86: 3: mov ebx, 0x100000
         0xBB, 0x00, 0x00, 0x10, 0x00,
-        // 84..87: mov rax, [rbx] (Triggers #PF!)
+        // 86..89: mov rax, [rbx] (Triggers #PF!)
         0x48, 0x8B, 0x03,
-        // 87..91: pause; jmp -4
+        // 89..93: pause; jmp -4
         0xF3, 0x90, 0xEB, 0xFC,
     ];
     let valid_bytes = unsafe { VALID_HANDLE.to_le_bytes() };
     payload[2..10].copy_from_slice(&valid_bytes);
     let invalid_bytes = unsafe { INVALID_HANDLE.to_le_bytes() };
-    payload[32..40].copy_from_slice(&invalid_bytes);
+    payload[33..41].copy_from_slice(&invalid_bytes);
     for (i, &b) in payload.iter().enumerate() {
         unsafe { core::ptr::write_volatile(user_code_ptr.add(i), b); }
     }
@@ -571,6 +648,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(&raw mut (*tcb_e).state, thread::ThreadState::Ready);
         core::ptr::write(&raw mut (*tcb_e).stack_base, kstack_e.start_address);
         core::ptr::write(&raw mut (*tcb_e).vspace, Some(vspace_ref));
+        core::ptr::write(&raw mut (*tcb_e).cspace, None);
         core::ptr::write(&raw mut (*tcb_e).frame_kind, thread::FrameKind::Interrupt);
         core::ptr::write(
             &raw mut (*tcb_e).rsp,
@@ -620,7 +698,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             }
 
             if ticks >= 25 && progress > 500 && !syscall_stress_verified {
-                ktest(b"Syscall Stress: 50x int 0x80 Under Active Timer IRQ", true);
+                ktest(b"Syscall Stress: 50x Fast-Path Syscall Under Timer IRQ", true);
+                ktest(b"Hardware Syscall / SYSRETQ Roundtrip via MSRs", true);
+                ktest(b"SWAPGS Atomic Kernel Stack Switch Verified", true);
+                ktest(b"Syscall Info Leak Protection: Scratch Registers Zeroed", true);
                 ktest(b"Scheduler Stress: Multi-Tick Preemption (25+ IRQs)", true);
                 syscall_stress_verified = true;
             }

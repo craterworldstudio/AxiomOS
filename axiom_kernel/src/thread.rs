@@ -29,6 +29,7 @@ pub struct TCB {
     pub next_in_queue: Option<ObjectRef>, 
     pub vspace: Option<ObjectRef>,
     pub frame_kind: FrameKind,
+    pub cspace: Option<ObjectRef>,
 }
 
 impl TCB {

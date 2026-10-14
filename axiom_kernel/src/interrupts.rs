@@ -319,6 +319,92 @@ global_asm!(
     "1:",
     "iretq",
 
+    ".global syscall_entry",
+    "syscall_entry:",
+    // Hardware actions on 'syscall':
+    // - RCX = RIP
+    // - R11 = RFLAGS
+    // - RFLAGS &= ~SFMASK (IF=0, DF=0)
+    // - CS = 0x08, SS = 0x10
+    // - RSP is unchanged (still user RSP)!
+
+    // 1. Atomically swap GS base to access CpuLocal
+    "swapgs",
+    "mov gs:[0], rsp",         // CpuLocal.user_rsp = user RSP
+    "mov rsp, gs:[8]",         // Switch to trusted kernel stack (CpuLocal.kernel_rsp)
+
+    // 2. Save user return context
+    "push gs:[0]",             // [rsp + 72]: user RSP
+    "push r11",                // [rsp + 64]: user RFLAGS
+    "push rcx",                // [rsp + 56]: user RIP
+
+    // 3. Save callee-saved registers
+    "push rbp",                // [rsp + 48]
+    "push rbx",                // [rsp + 40]
+    "push r12",                // [rsp + 32]
+    "push r13",                // [rsp + 24]
+    "push r14",                // [rsp + 16]
+    "push r15",                // [rsp + 8]
+
+    // 4. Align stack for System V ABI: 9 pushes = 72 bytes. 72 % 16 = 8.
+    // Subtract 8 so that (rsp + 8) % 16 == 0 when entering callee!
+    "sub rsp, 8",
+
+    // 5. Setup arguments for sys_invoke_handler:
+    // User passes:
+    // rdi = handle
+    // rsi = operation
+    // rdx = arg1
+    // r10 = arg2 (replaces rcx which was destroyed by hardware syscall)
+    // r8  = arg3
+    // r9  = arg4
+    // ABI: sys_invoke_handler(rdi, rsi, rdx, rcx, r8, r9)
+    "mov rcx, r10",
+    "call sys_invoke_handler",
+
+    "add rsp, 8",              // Remove alignment padding
+
+    // 6. Security: Reload user data segments (0x1B) and zero out scratch registers
+    "mov r10w, 0x1B",
+    "mov ds, r10w",
+    "mov es, r10w",
+    "xor rdi, rdi",
+    "xor rsi, rsi",
+    "xor rdx, rdx",
+    "xor r8, r8",
+    "xor r9, r9",
+    "xor r10, r10",
+
+    // 7. Restore callee-saved registers
+    "pop r15",
+    "pop r14",
+    "pop r13",
+    "pop r12",
+    "pop rbx",
+    "pop rbp",
+
+    // 8. Restore user return context
+    "pop rcx",                 // User RIP
+    "pop r11",                 // User RFLAGS
+
+    // Security: Validate user RIP in RCX is canonical user address (< 0x0000800000000000)
+    // Prevents CVE-2012-0217 SYSRET vulnerability
+    "mov r10, 0x0000800000000000",
+    "cmp rcx, r10",
+    "jae 99f",
+    "xor r10, r10",            // Keep scratch register zeroed
+
+    "pop rsp",                 // Restore User RSP
+
+    // 9. Swap GS back to user and return
+    "swapgs",
+    "sysretq",
+
+    // Non-canonical RIP trap
+    "99:",
+    "cli",
+    "hlt",
+
     ".global timer_interrupt_stub",
     "timer_interrupt_stub:",
     // CPU pushed hardware frame:
@@ -461,10 +547,12 @@ pub extern "C" fn timer_interrupt_handler(rsp: u64, cs: u64) -> u64 {
                     }
                 }
 
-                // Synchronize TSS RSP0 for user mode
+                // Synchronize TSS RSP0 and CpuLocal.kernel_rsp for user mode
                 let next_stack_base = core::ptr::read(&raw const (*next_tcb).stack_base);
                 if next_stack_base != 0 {
-                    crate::gdt::set_tss_rsp0(next_stack_base + crate::memory::PAGE_SIZE);
+                    let kstack_top = next_stack_base + crate::memory::PAGE_SIZE;
+                    crate::gdt::set_tss_rsp0(kstack_top);
+                    crate::syscall::set_cpu_kernel_stack(kstack_top);
                 }
 
                 let next_rsp = core::ptr::read(&raw const (*next_tcb).rsp);

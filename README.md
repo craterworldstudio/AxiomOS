@@ -26,12 +26,19 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
   - Dynamic `TSS.RSP0` retargeting per thread.
   - 16-byte System V AMD64 ABI stack alignment and user segment selector restoration.
   - Stress testing: 50x rapid syscalls under active timer IRQ, 25+ preemption time-slices, dynamic thread lifecycle/reuse, and stack canary verification.
+- **Phase 5: Hardware Fast-Path Syscall Gateway, CDT & Atomic RPC (Microkernel Freeze)**:
+  - Hardware fast-path system calls via x86 MSRs (`IA32_EFER`, `STAR`, `LSTAR`, `SFMASK`, `KERNEL_GS_BASE`).
+  - Atomic kernel stack isolation via `swapgs` using per-CPU `CpuLocal` state.
+  - Full Capability Derivation Tree (CDT) with rights monotonicity enforcement ($R_{\text{child}} \subseteq R_{\text{parent}}$) and recursive transitive revocation (`OP_MINT`, `OP_REVOKE`, `OP_DELETE`).
+  - Synchronous atomic RPC rendezvous primitive (`OP_CALL`) with direct timeslice handover (`enqueue_front`).
+  - Security hardening: Spectre v1 speculation barrier (`lfence`), SYSRET non-canonical address validation (CVE-2012-0217 mitigation), user data segment reload (`0x1B`), and complete scratch register sanitization (`RDI`, `RSI`, `RDX`, `R8`, `R9`, `R10`).
+  - Formal microkernel boundary freeze: Ring 0 code locked; all subsequent OS services (shell, memory allocators, compilers, login) run in Ring 3.
 
 ---
 
 ## Production Verification
 
-![AxiomOS Production Self-Test Suite](gallery/Phase4PreemptionAndStressVerified.png)
+![AxiomOS Phase 5 Full Capability ABI Verified](gallery/Phase5FullCapabilityABIVerified.png)
 
 ---
 
@@ -64,4 +71,5 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
 - [Architecture Roadmap](docs/02-ARCHITECTURE-ROADMAP.md)
 - [ADR Index](docs/05-ADRs/)
   - [ADR-0007: Preemption Architecture, LAPIC Timer, and Bounded Ring-0 Deferral](docs/05-ADRs/ADR-007.md)
+  - [ADR-0008: Hardware Fast-Path Syscall Gateway, Capability Derivation Tree (CDT), Atomic RPC, and Kernel Boundary Freeze](docs/05-ADRs/ADR-008.md)
 - [Capability Lifecycle Model](docs/06-CAPABILITY-LIFECYCLE.md)

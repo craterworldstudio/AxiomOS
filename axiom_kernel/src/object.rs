@@ -17,6 +17,7 @@ impl ObjectKind {
             ObjectKind::Endpoint => (128, 8),
             ObjectKind::TCB => (512, 8),
             ObjectKind::VSpace => (4096, 4096),
+            ObjectKind::CNode => (core::mem::size_of::<crate::capability::CNode>(), 8),
             ObjectKind::Untyped => (0, 1),
             _ => (0, 1),
         }

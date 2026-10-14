@@ -20,6 +20,7 @@ mod thread;
 mod scheduler;
 mod console;
 mod apic;
+mod syscall;
 
 #[cfg(not(feature = "prod-mode"))]
 include!("main_dev.rs");
