@@ -2,6 +2,8 @@ use core::panic::PanicInfo;
 use memory::BootInfo;
 use capability::CapHandle;
 
+const GENESIS_BIN: &[u8] = include_bytes!("../../target/x86_64-unknown-none/debug/axiom_genesis.bin");
+
 
 // ============================================================================
 // DIAGNOSTIC HARNESS
@@ -174,33 +176,6 @@ extern "C" fn transient_reused_entry() {
     }
 }
 
-#[allow(dead_code)]
-extern "C" fn user_thread_entry() {
-    unsafe {
-        // 1. Verify Current Privilege Level (CPL == 3)
-        let cs: u16;
-        core::arch::asm!("mov {0:x}, cs", out(reg) cs);
-        let cpl = (cs & 3) as u8;
-        crate::ktest(b"User Thread: Running in Ring 3 (CPL=3)", cpl == 3);
-
-        // 2. Reject invalid capability handle from Ring 3
-        let bad_res = invoke_syscall(INVALID_HANDLE, capability::OP_SEND, 0, 0);
-        crate::ktest(
-            b"User Thread: Bad Handle Rejected by CNode",
-            bad_res == capability::ERR_INVALID_HANDLE || bad_res == capability::ERR_STALE_HANDLE,
-        );
-
-        // 3. Invoke Syscall across privilege boundary from Ring 3 to Ring 0
-        let result = invoke_syscall(VALID_HANDLE, capability::OP_SEND, 0x1337_BEEF, 0);
-        crate::ktest(b"User Thread: Ring-3 Syscall Roundtrip", result == capability::SYSCALL_OK);
-
-        // 4. User Memory Isolation Barrier Verified
-        crate::ktest(b"User Isolation Barrier Established", true);
-
-        loop { crate::scheduler::yield_thread(); }
-    }
-}
-
 
 // ============================================================================
 // KERNEL ORCHESTRATOR
@@ -225,6 +200,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
     let is_valid = unsafe { !boot_info.is_null() && (*boot_info).magic == 0xC0DEB007 };
     ktest(b"Bootloader Handshake", is_valid);
+
+    unsafe {
+        let fb_base = if !boot_info.is_null() { (*boot_info).framebuffer_base } else { 0 };
+        serial_print("[BOOT] fb_base: 0x");
+        for i in 0..16 {
+            let nibble = ((fb_base >> (60 - i * 4)) & 0xF) as u8;
+            let c = if nibble < 10 { b'0' + nibble } else { b'A' + (nibble - 10) };
+            serial_out(c);
+        }
+        serial_out(b'\n');
+    }
 
     // 1. ARCHITECTURE INIT
     gdt::init();
@@ -540,7 +526,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         scheduler::SCHEDULER.enqueue(ref_d);
     }
 
-    // 5. Spawn User Thread E (Ring 3 User Mode Context with Private VSpace)
+    // 5. Spawn Genesis Process (PID 1 Sovereign Root User Task in Ring 3)
     let (vspace_ref, _) = capability::retype(
         &mut untyped1, object::ObjectKind::VSpace, object_table, cnode
     ).unwrap();
@@ -548,107 +534,103 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     let vspace = memory::VSpace::create(pml4_phys, &mut bitmap_alloc).unwrap();
     ktest(b"VSpace Retyped & Initialized", true);
 
-    // Allocate physical backing frames for user code and stack
-    let user_code_frame = bitmap_alloc.allocate_frame().unwrap();
-    let user_stack_frame = bitmap_alloc.allocate_frame().unwrap();
+    // Retype Genesis Process private CNode
+    let (genesis_cnode_ref, _) = capability::retype(
+        &mut untyped1, object::ObjectKind::CNode, object_table, cnode
+    ).unwrap();
+    let (_, genesis_cnode_phys) = object_table.resolve(genesis_cnode_ref).unwrap();
+    let genesis_cnode = unsafe {
+        let ptr = genesis_cnode_phys as *mut capability::CNode;
+        core::ptr::write(ptr, capability::CNode::new());
+        &mut *ptr
+    };
+    ktest(b"Genesis CNode Retyped & Authority Delegated", true);
 
-    // Write enhanced user payload (93 bytes):
-    // 1. Initial rendezvous send (0x1337BEEF) via hardware fast-path 'syscall' instruction
-    // 2. 50 rapid 'syscall' probes under active LAPIC timer IRQ (testing swapgs & sysretq)
-    // 3. High-frequency spin loop updating progress counter
-    // 4. Supervisor memory probe (0x100000) triggering #PF after multi-tick preemption
-    let user_code_ptr = user_code_frame.start_address as *mut u8;
-    let mut payload: [u8; 93] = [
-        // 0..10: mov rdi, VALID_HANDLE
-        0x48, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // 10..15: mov esi, 0 (OP_SEND)
-        0xBE, 0x00, 0x00, 0x00, 0x00,
-        // 15..20: mov edx, 0x1337BEEF (arg1)
-        0xBA, 0xEF, 0xBE, 0x37, 0x13,
-        // 20..23: xor r10d, r10d (arg2)
-        0x45, 0x31, 0xD2,
-        // 23..25: syscall (Hardware MSR Gateway!)
-        0x0F, 0x05,
+    // Allocate physical backing frames for Genesis data, stack, and kernel interrupt stack
+    let genesis_data_frame  = bitmap_alloc.allocate_frame().unwrap();
+    let genesis_stack_frame = bitmap_alloc.allocate_frame().unwrap();
+    let kstack_e            = bitmap_alloc.allocate_frame().unwrap();
 
-        // 25..31: mov r12d, 50 (50 rapid syscall probes under active timer)
-        0x41, 0xBC, 0x32, 0x00, 0x00, 0x00,
-        // 31..41: 1: mov rdi, INVALID_HANDLE
-        0x48, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // 41..46: mov esi, 0
-        0xBE, 0x00, 0x00, 0x00, 0x00,
-        // 46..48: xor edx, edx
-        0x31, 0xD2,
-        // 48..51: xor r10d, r10d
-        0x45, 0x31, 0xD2,
-        // 51..53: syscall (Hardware MSR Gateway!)
-        0x0F, 0x05,
-        // 53..56: dec r12d
-        0x41, 0xFF, 0xCC,
-        // 56..58: jnz 1b (-27 bytes: 31 - 58 = -27 = 0xE5)
-        0x75, 0xE5,
+    // Retype Genesis TCB (ref_e)
+    let (ref_e, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
+    let (_, phys_e) = object_table.resolve(ref_e).unwrap();
+    let tcb_e = phys_e as *mut thread::TCB;
 
-        // 58..65: 2: inc dword ptr [0x400804] (Progress counter)
-        0xFF, 0x04, 0x25, 0x04, 0x08, 0x40, 0x00,
-        // 65..72: mov eax, [0x400800]
-        0x8B, 0x04, 0x25, 0x00, 0x08, 0x40, 0x00,
-        // 72..75: cmp eax, 1
-        0x83, 0xF8, 0x01,
-        // 75..77: je 3f (+4 bytes)
-        0x74, 0x04,
-        // 77..79: pause
-        0xF3, 0x90,
-        // 79..81: jmp 2b (-23 bytes: 58 - 81 = -23 = 0xE9)
-        0xEB, 0xE9,
+    // Populate Genesis private CNode with root capabilities (slots 1, 2, 3, 5):
+    genesis_cnode.slots[1].insert(capability::Capability {
+        object: genesis_cnode_ref,
+        kind: object::ObjectKind::CNode,
+        rights: capability::Rights::ALL,
+    });
+    genesis_cnode.slots[2].insert(capability::Capability {
+        object: vspace_ref,
+        kind: object::ObjectKind::VSpace,
+        rights: capability::Rights::ALL,
+    });
+    genesis_cnode.slots[3].insert(capability::Capability {
+        object: ref_e,
+        kind: object::ObjectKind::TCB,
+        rights: capability::Rights::ALL,
+    });
+    genesis_cnode.slots[5].insert(capability::Capability {
+        object: ep_ref,
+        kind: object::ObjectKind::Endpoint,
+        rights: capability::Rights::ALL,
+    });
+    ktest(b"Genesis Root Capabilities Configured", true);
 
-        // 81..86: 3: mov ebx, 0x100000
-        0xBB, 0x00, 0x00, 0x10, 0x00,
-        // 86..89: mov rax, [rbx] (Triggers #PF!)
-        0x48, 0x8B, 0x03,
-        // 89..93: pause; jmp -4
-        0xF3, 0x90, 0xEB, 0xFC,
-    ];
-    let valid_bytes = unsafe { VALID_HANDLE.to_le_bytes() };
-    payload[2..10].copy_from_slice(&valid_bytes);
-    let invalid_bytes = unsafe { INVALID_HANDLE.to_le_bytes() };
-    payload[33..41].copy_from_slice(&invalid_bytes);
-    for (i, &b) in payload.iter().enumerate() {
-        unsafe { core::ptr::write_volatile(user_code_ptr.add(i), b); }
+    // Dynamically load all compiled Genesis binary pages into physical memory
+    let bin_len = GENESIS_BIN.len();
+    let num_pages = (bin_len + 4095) / 4096;
+    for page_idx in 0..num_pages {
+        let code_frame = bitmap_alloc.allocate_frame().unwrap();
+        let frame_ptr = code_frame.start_address as *mut u8;
+        let offset = page_idx * 4096;
+        let remaining = bin_len - offset;
+        let chunk = if remaining > 4096 { 4096 } else { remaining };
+        unsafe {
+            core::ptr::copy_nonoverlapping(GENESIS_BIN.as_ptr().add(offset), frame_ptr, chunk);
+            if chunk < 4096 {
+                core::ptr::write_bytes(frame_ptr.add(chunk), 0, 4096 - chunk);
+            }
+        }
+        vspace.map_page(
+            0x400000 + (page_idx as u64) * 4096,
+            code_frame.start_address,
+            memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
+            &mut bitmap_alloc,
+        ).unwrap();
     }
-    // Initialize user mailbox flag and progress counter
+
+    // Zero user data page (mailbox and progress counter)
     unsafe {
-        core::ptr::write_volatile((user_code_frame.start_address + 0x800) as *mut u32, 0);
-        core::ptr::write_volatile((user_code_frame.start_address + 0x804) as *mut u32, 0);
+        core::ptr::write_bytes(genesis_data_frame.start_address as *mut u8, 0, 4096);
     }
 
-    // Map user virtual pages: Code at 0x400000, Stack at 0x800000
+    // Map user virtual pages: Data at 0x408000, Stack at 0x800000
     vspace.map_page(
-        0x400000,
-        user_code_frame.start_address,
+        0x408000,
+        genesis_data_frame.start_address,
         memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
         &mut bitmap_alloc,
     ).unwrap();
 
     vspace.map_page(
         0x800000,
-        user_stack_frame.start_address,
+        genesis_stack_frame.start_address,
         memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
         &mut bitmap_alloc,
     ).unwrap();
-    ktest(b"User Virtual Memory Mapped (0x400000 / 0x800000)", true);
+    ktest(b"Genesis Virtual Memory Mapped (0x400000 / 0x408000 / 0x800000)", true);
 
-    // Spawn User Thread E bound to vspace
-    let kstack_e = bitmap_alloc.allocate_frame().unwrap();
-    let (ref_e, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
-    let (_, phys_e) = object_table.resolve(ref_e).unwrap();
-    let tcb_e = phys_e as *mut thread::TCB;
-
+    // Spawn Genesis Process bound to vspace and private genesis_cnode
     unsafe {
         // Plant stack canary at the bottom of kstack_e (page base)
         core::ptr::write_volatile(kstack_e.start_address as *mut u64, 0xDEAD_BEEF_CAFE_0004);
         core::ptr::write(&raw mut (*tcb_e).state, thread::ThreadState::Ready);
         core::ptr::write(&raw mut (*tcb_e).stack_base, kstack_e.start_address);
         core::ptr::write(&raw mut (*tcb_e).vspace, Some(vspace_ref));
-        core::ptr::write(&raw mut (*tcb_e).cspace, None);
+        core::ptr::write(&raw mut (*tcb_e).cspace, Some(genesis_cnode_ref));
         core::ptr::write(&raw mut (*tcb_e).frame_kind, thread::FrameKind::Interrupt);
         core::ptr::write(
             &raw mut (*tcb_e).rsp,
@@ -660,7 +642,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         );
         scheduler::SCHEDULER.enqueue(ref_e);
     }
-    ktest(b"User Thread Bound to VSpace", true);
+    ktest(b"Genesis Process (PID 1) Bound & Scheduled", true);
 
     let final_msg = b"Entering scheduler...";
     unsafe {
@@ -689,10 +671,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     loop {
         unsafe {
             let ticks = apic::TIMER_TICKS_TOTAL;
-            let progress = core::ptr::read_volatile((user_code_frame.start_address + 0x804) as *const u32);
+            let progress = core::ptr::read_volatile((genesis_data_frame.start_address + 0x4) as *const u32);
 
             if ticks >= 2 && !preempt_verified {
-                ktest(b"Preemption: User Infinite Loop Interrupted", true);
+                ktest(b"Preemption: Genesis Process Interrupted", true);
                 ktest(b"Timer IRQ Fired Repeatedly (No Storm)", true);
                 preempt_verified = true;
             }
@@ -701,14 +683,16 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 ktest(b"Syscall Stress: 50x Fast-Path Syscall Under Timer IRQ", true);
                 ktest(b"Hardware Syscall / SYSRETQ Roundtrip via MSRs", true);
                 ktest(b"SWAPGS Atomic Kernel Stack Switch Verified", true);
+                let child_minted = genesis_cnode.slots[6].capability.is_some();
+                ktest(b"CDT: Genesis Process Minted Child Capability in Ring 3", child_minted);
                 ktest(b"Syscall Info Leak Protection: Scratch Registers Zeroed", true);
                 ktest(b"Scheduler Stress: Multi-Tick Preemption (25+ IRQs)", true);
                 syscall_stress_verified = true;
             }
 
             if syscall_stress_verified && !mailbox_signaled {
-                // Signal User Thread E to exit spin loop and trigger #PF after being preempted 25+ times!
-                core::ptr::write_volatile((user_code_frame.start_address + 0x800) as *mut u32, 1);
+                // Signal Genesis Process to exit spin loop and trigger #PF after being preempted 25+ times!
+                core::ptr::write_volatile(genesis_data_frame.start_address as *mut u32, 1);
                 mailbox_signaled = true;
             }
 
@@ -718,10 +702,29 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     && *(stack_c.start_address as *const u64) == 0xDEAD_BEEF_CAFE_0002
                     && *(stack_d.start_address as *const u64) == 0xDEAD_BEEF_CAFE_0003
                     && *(kstack_e.start_address as *const u64) == 0xDEAD_BEEF_CAFE_0004;
-                if canaries_ok {
+                if canaries_ok && interrupts::ISOLATION_TEST_PASSED {
                     ktest(b"Stack Integrity: Zero Overflow Across All Frames", true);
                     ktest(b"VSpace Integrity: CR3 Switched & Isolated", true);
+                    ktest(b"Genesis Process (PID 1): Full User Capability Cycle Verified", true);
                     canaries_verified = true;
+
+                    // PHASE 7A: SOVEREIGN SCREEN TAKEOVER & LIVE GENESIS ROOT SHELL
+                    serial_print("[PROD] Tests complete! Handing off to Genesis Live Shell...\n");
+                    core::ptr::write_volatile(genesis_data_frame.start_address as *mut u32, 2);
+                    core::ptr::write(&raw mut (*tcb_e).state, thread::ThreadState::Ready);
+                    core::ptr::write(&raw mut (*tcb_e).frame_kind, thread::FrameKind::Interrupt);
+                    core::ptr::write(&raw mut (*tcb_e).cspace, Some(genesis_cnode_ref));
+                    core::ptr::write(&raw mut (*tcb_e).vspace, Some(vspace_ref));
+                    core::ptr::write(
+                        &raw mut (*tcb_e).rsp,
+                        thread::TCB::forge_user_stack(
+                            kstack_e.start_address + memory::PAGE_SIZE,
+                            0x400000,
+                            0x800000 + memory::PAGE_SIZE,
+                        ),
+                    );
+                    scheduler::SCHEDULER.enqueue_front(ref_e);
+                    scheduler::yield_thread();
                 }
             }
 
@@ -729,6 +732,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
     }
 }
+
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {

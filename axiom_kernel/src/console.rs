@@ -179,4 +179,64 @@ impl Console {
             }
         }
     }
+
+    pub unsafe fn draw_banner(&mut self) {
+        crate::serial_print("[CONSOLE] draw_banner called! is_graphics=");
+        crate::serial_print(if self.is_graphics { "true\n" } else { "false\n" });
+        self.clear();
+        if self.is_graphics && !self.fb_base.is_null() {
+            // 1. Draw top status bar background: 28 pixels high across all columns
+            // Color: Deep obsidian slate (0x00161B22)
+            let header_height = 28;
+            for row in 0..header_height {
+                let offset = row * self.pitch;
+                for col in 0..self.width {
+                    *self.fb_base.add(offset + col) = 0x00161B22;
+                }
+            }
+            // 2. Draw accent border line at y = 28 (Electric Cyan: 0x0000D2FF)
+            let border_offset = header_height * self.pitch;
+            for col in 0..self.width {
+                *self.fb_base.add(border_offset + col) = 0x0000D2FF;
+            }
+
+            // 3. Render Status Text on Header
+            let old_fg = self.fg_color;
+            let old_bg = self.bg_color;
+            self.col = 2;
+            self.row = 0;
+            self.bg_color = 0x00161B22;
+
+            self.fg_color = 0x0000D2FF; // Electric Cyan
+            self.write_str("[ AXIOM OS ]");
+
+            self.fg_color = 0x00E0E0E0; // Silver White
+            self.write_str("  v0.2.0-alpha   |   ");
+
+            self.fg_color = 0x002EE59D; // Emerald Green
+            self.write_str("PID 1: Genesis");
+
+            self.fg_color = 0x00E0E0E0;
+            self.write_str("   |   ");
+
+            self.fg_color = 0x00FFD166; // Gold Yellow
+            self.write_str("Mode: Sovereign Ring 3");
+
+            self.fg_color = 0x00E0E0E0;
+            self.write_str("   |   ");
+
+            self.fg_color = 0x0000D2FF;
+            self.write_str("Display: 1280x720 16:9");
+
+            // Reset cursor to start below header (Row 3)
+            self.row = 3;
+            self.col = 2;
+            self.fg_color = old_fg;
+            self.bg_color = old_bg;
+        } else {
+            self.row = 1;
+            self.col = 0;
+            self.write_str("[ AXIOM OS ] Genesis Online\n");
+        }
+    }
 }

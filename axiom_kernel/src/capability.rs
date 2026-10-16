@@ -6,6 +6,10 @@ pub const OP_CALL: u64    = 2;
 pub const OP_MINT: u64    = 3;
 pub const OP_REVOKE: u64  = 4;
 pub const OP_DELETE: u64  = 5;
+pub const OP_CONSOLE_WRITE: u64  = 6;
+pub const OP_CONSOLE_CLEAR: u64  = 7;
+pub const OP_CONSOLE_BANNER: u64 = 8;
+pub const OP_CONSOLE_COLOR: u64  = 9;
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;
@@ -312,7 +316,10 @@ pub extern "C" fn sys_invoke_handler(
     };
 
     let slot = &mut cnode.slots[slot_idx];
-    if !slot.is_valid_generation(handle.generation()) { return ERR_STALE_HANDLE; }
+    if !slot.is_valid_generation(handle.generation()) {
+        unsafe { crate::serial_print("[SYSCALL] ERR_STALE_HANDLE!\n"); }
+        return ERR_STALE_HANDLE;
+    }
 
     let cap = slot.capability.as_ref().unwrap();
 
@@ -391,6 +398,39 @@ pub extern "C" fn sys_invoke_handler(
                     } else {
                         ERR_NO_RECEIVER
                     }
+                },
+                OP_CONSOLE_WRITE => {
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let console = unsafe { &raw mut crate::console::CONSOLE };
+                    let len = if arg2 != 0 { core::cmp::min(arg2 as usize, 8) } else { 0 };
+                    if len > 0 {
+                        let bytes = arg1.to_le_bytes();
+                        for i in 0..len {
+                            unsafe { (*console).write_char(bytes[i]); }
+                        }
+                    } else {
+                        unsafe { (*console).write_char(arg1 as u8); }
+                    }
+                    SYSCALL_OK
+                },
+                OP_CONSOLE_CLEAR => {
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let console = unsafe { &raw mut crate::console::CONSOLE };
+                    unsafe { (*console).clear(); }
+                    SYSCALL_OK
+                },
+                OP_CONSOLE_BANNER => {
+                    unsafe { crate::serial_print("[KERNEL] OP_CONSOLE_BANNER invoked!\n"); }
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let console = unsafe { &raw mut crate::console::CONSOLE };
+                    unsafe { (*console).draw_banner(); }
+                    SYSCALL_OK
+                },
+                OP_CONSOLE_COLOR => {
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let console = unsafe { &raw mut crate::console::CONSOLE };
+                    unsafe { (*console).set_color(arg1 as u32, arg2 as u32); }
+                    SYSCALL_OK
                 },
                 _ => ERR_UNSUPPORTED_OP,
             }

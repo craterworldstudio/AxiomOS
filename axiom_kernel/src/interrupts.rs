@@ -55,6 +55,9 @@ pub fn init() {
         IDT[8].set_handler(double_fault_stub as *const () as u64);
         IDT[8].ist = crate::gdt::DOUBLE_FAULT_IST_INDEX as u8 + 1;
 
+        IDT[13].set_handler(general_protection_fault_stub as *const () as u64);
+        IDT[13].attributes = 0x8E; // Ring 0 Interrupt Gate
+
         IDT[14].set_handler(page_fault_stub as *const () as u64);
         IDT[14].attributes = 0x8E; // Ring 0 Interrupt Gate
 
@@ -104,6 +107,7 @@ global_asm!(
 extern "C" {
     fn breakpoint_stub();
     fn double_fault_stub();
+    fn general_protection_fault_stub();
     fn page_fault_stub();
 }
 
@@ -130,6 +134,18 @@ pub struct ExceptionStackFrame {
 }
 
 fn kernel_panic(exception: &str, error_code: u64, frame: &ExceptionStackFrame, cr2: u64) {
+    unsafe {
+        crate::serial_print("\n[KERNEL PANIC] EXCEPTION: ");
+        crate::serial_print(exception);
+        crate::serial_print(" RIP: ");
+        crate::serial_print_hex(frame.instruction_pointer);
+        crate::serial_print(" CR2: ");
+        crate::serial_print_hex(cr2);
+        crate::serial_print(" ERROR_CODE: ");
+        crate::serial_print_hex(error_code);
+        crate::serial_print("\n");
+    }
+
     let vga = 0xB8000 as *mut u8;
     
     // Clear the screen to blue (0x1F = White text on Blue background)
@@ -194,6 +210,21 @@ pub extern "C" fn double_fault_handler(frame: &ExceptionStackFrame, error_code: 
     kernel_panic("DOUBLE FAULT (#8)   ", error_code, frame, 0);
 }
 
+global_asm!(
+    ".global general_protection_fault_stub",
+    "general_protection_fault_stub:",
+    "pop rsi",
+    "mov rdi, rsp",
+    "call general_protection_fault_handler",
+    "cli",
+    "hlt",
+);
+
+#[no_mangle]
+pub extern "C" fn general_protection_fault_handler(frame: &ExceptionStackFrame, error_code: u64) {
+    kernel_panic("GENERAL PROTECTION FAULT (#13)", error_code, frame, 0);
+}
+
 pub static mut USER_PAGE_FAULT_TRAPPED: bool = false;
 pub static mut LAST_FAULT_ADDR: u64 = 0;
 
@@ -217,6 +248,13 @@ pub static mut ISOLATION_TEST_PASSED: bool = false;
 pub extern "C" fn page_fault_handler(frame: *mut ExceptionStackFrame, cr2: u64, error_code: u64) {
     unsafe {
         LAST_FAULT_ADDR = cr2;
+        crate::serial_print("[PAGE FAULT] cr2=");
+        crate::serial_print_hex(cr2);
+        crate::serial_print(" rip=");
+        crate::serial_print_hex((*frame).instruction_pointer);
+        crate::serial_print(" err=");
+        crate::serial_print_hex(error_code);
+        crate::serial_print("\n");
         let is_user = (error_code & 4) != 0;
         let is_present = (error_code & 1) != 0;
         let is_read = (error_code & 2) == 0;

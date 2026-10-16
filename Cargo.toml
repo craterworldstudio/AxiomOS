@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "axiom_boot",
-    "axiom_core",
+    "libaxiom",
+    "axiom_genesis",
     "axiom_kernel"
 ]
 resolver = "2"

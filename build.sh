@@ -28,6 +28,10 @@ else
     CARGO_FLAGS=""
 fi
 
+echo "[BUILD] Compiling Genesis Process (axiom_genesis)..."
+cargo build -p axiom_genesis --target x86_64-unknown-none
+objcopy -O binary target/x86_64-unknown-none/debug/axiom_genesis target/x86_64-unknown-none/debug/axiom_genesis.bin
+
 echo "[BUILD] Compiling Axiom Kernel..."
 cargo build -p axiom_kernel $CARGO_FLAGS
 
@@ -49,7 +53,7 @@ if [ "$BIOS_MODE" -eq 0 ]; then
     cp target/x86_64-unknown-uefi/debug/axiom_boot.efi target/esp/EFI/BOOT/BOOTX64.EFI
     cp target/x86_64-unknown-none/debug/axiom_kernel.bin target/esp/axiom_kernel.bin
 
-    UEFI_IMG="target/uefi_disk.img"
+    UEFI_IMG="target/axiom_mkern.img"
     dd if=/dev/zero of="$UEFI_IMG" bs=1M count=64 status=none
     mkfs.vfat -F 32 "$UEFI_IMG" >/dev/null
 
