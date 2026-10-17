@@ -151,15 +151,10 @@ impl CapGraph {
 
         // Add executables to bin/ Map (pointing directly to C/ASM binaries)
         self.add_static_blob(bin_id, "echo.bin", ECHO_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "echo", ECHO_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(bin_id, "ls.bin", LS_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "ls", LS_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(bin_id, "cat.bin", CAT_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "cat", CAT_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(bin_id, "whoami.bin", WHOAMI_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "whoami", WHOAMI_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(bin_id, "axe.bin", AXE_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "axe", AXE_BIN, RIGHTS_EXEC | RIGHTS_READ);
 
         // Add config files to etc/ Map
         self.add_static_blob(etc_id, "caps.ledger", CAPS_LEDGER, RIGHTS_READ);

@@ -1,6 +1,10 @@
 #include "../include/axiom.h"
 
 int main(int argc, char** argv, CapKeyring* keyring) {
+    if (argc > 1 && strcmp(argv[1], "-dh") == 0) {
+        axiom_println("  cat                  - print file contents");
+        return 0;
+    }
     if (argc < 2) {
         axiom_println("cat: missing file operand");
         return 1;

@@ -1,26 +1,14 @@
 #include "../include/axiom.h"
 
-// CapGraph directory entry header matching userland layout
-typedef struct {
-    char     name[32];
-    uint32_t is_dir;
-    uint32_t data_len;
-    uint8_t  rights;
-    uint8_t  in_use;
-} CapEntryInfo;
-
-typedef struct {
-    CapEntryInfo entries[16];
-    uint32_t     count;
-} CapMapContext;
-
 int main(int argc, char** argv, CapKeyring* keyring) {
-    (void)argc;
-    (void)argv;
+    if (argc > 1 && strcmp(argv[1], "-dh") == 0) {
+        axiom_println("  ls                   - list directory contents");
+        return 0;
+    }
     
     CapMapContext* map = (CapMapContext*)keyring->storage_cap;
     if (!map) {
-        axiom_println("ls: capability map unavailable");
+        axiom_println("ls: cannot access directory");
         return 1;
     }
     
@@ -44,7 +32,7 @@ int main(int argc, char** argv, CapKeyring* keyring) {
     if (printed > 0) {
         axiom_println("");
     } else {
-        axiom_println("(empty capability map)");
+        axiom_println("(empty)");
     }
     
     axiom_set_color(0x00E0E0E0, 0x00101418);

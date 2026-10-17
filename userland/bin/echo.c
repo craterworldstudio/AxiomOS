@@ -2,6 +2,10 @@
 
 int main(int argc, char** argv, CapKeyring* keyring) {
     (void)keyring;
+    if (argc > 1 && strcmp(argv[1], "-dh") == 0) {
+        axiom_println("  echo                 - print arguments to console or redirect to file");
+        return 0;
+    }
     for (int i = 1; i < argc; i++) {
         const char* arg = argv[i];
         size_t len = strlen(arg);

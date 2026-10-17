@@ -39,6 +39,7 @@ pub struct CapEntryInfoWithData {
     pub data_len: u32,
     pub rights: u8,
     pub in_use: u8,
+    pub _pad: [u8; 6],
     pub data: *const u8,
 }
 
@@ -56,6 +57,7 @@ static mut MAP_CTX: CapMapContextWithData = CapMapContextWithData {
         data_len: 0,
         rights: 0,
         in_use: 0,
+        _pad: [0; 6],
         data: core::ptr::null(),
     }; 16],
     count: 0,
@@ -83,53 +85,41 @@ pub extern "C" fn _start() -> ! {
 
         println!();
         ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Electric Cyan
-        println!("================================================================================");
-        println!(" AXIOM OS SOVEREIGN CORE SUBSTRATE \u{2014} PID 1 (GENESIS) ONLINE");
-        println!("================================================================================");
+        println!("AxiomOS Sovereign Microkernel Substrate (x86_64)");
         ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Crisp Silver
+        println!("PID 1 (genesis) initialized in Ring 3. Capability Graph mounted.");
+        println!("Type 'help' for available system commands.");
         println!();
-        println!("Copyright (c) 2026 CraterWorld Studio. Open Source Sovereign Architecture.");
-        println!();
-        ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
-        println!("[ OK ] Microkernel Boot Selftests Passed & Frozen in Ring 0.");
-        println!("[ OK ] Sovereign Ring 3 Privilege Barrier Active (CPL=3).");
-        println!("[ OK ] Object-Oriented Structural Graph (\"CapGraph\") Active.");
-        println!("[ OK ] Standalone C/ASM Binaries Available in /bin.");
-        println!("[ OK ] Capability Ledger Enforcing Least-Privilege Execution.");
-        println!();
-        ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
-        println!("Genesis Sovereign Root Shell Ready.");
-        println!();
-        ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Electric Cyan
-        print!("root@axiom:~# ");
 
         // Initialize Sovereign Object-Oriented Structural Graph (CapGraph)
         unsafe { GRAPH.init(); }
 
         let mut current_map = 0; // Map Node 0: Root Entry Map
+        let mut cwd: [u8; 64] = [0; 64];
+        cwd[0] = b'/';
+        let mut cwd_len: usize = 1;
+
         let mut line_buf = [0u8; 128];
 
         loop {
+            ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
+            if let Ok(p) = core::str::from_utf8(&cwd[..cwd_len]) {
+                print!("root@axiom:{}# ", p);
+            } else {
+                print!("root@axiom:/# ");
+            }
+
             let len = ConsoleReader::read_line(&mut line_buf);
             if len == 0 {
-                ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
-                print!("root@axiom:~# ");
                 continue;
             }
 
             let cmd_str = match core::str::from_utf8(&line_buf[..len]) {
                 Ok(s) => s.trim(),
-                Err(_) => {
-                    ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
-                    print!("root@axiom:~# ");
-                    continue;
-                }
+                Err(_) => continue,
             };
 
-            execute_command(cmd_str, &mut current_map);
-
-            ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
-            print!("root@axiom:~# ");
+            execute_command(cmd_str, &mut current_map, &mut cwd, &mut cwd_len);
         }
     }
 
@@ -173,7 +163,7 @@ fn panic(_info: &PanicInfo) -> ! {
     }
 }
 
-fn execute_command(input: &str, current_map: &mut usize) {
+fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd_len: &mut usize) {
     if input.is_empty() {
         return;
     }
@@ -198,26 +188,59 @@ fn execute_command(input: &str, current_map: &mut usize) {
     match cmd {
         "help" => {
             ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
-            println!("AxiomOS CapGraph Shell (PID 1) \u{2014} Capability Commands:");
+            println!("AxiomOS Built-in Commands:");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Silver
             println!("  help                 - Display this command reference manual");
             println!("  status / icap        - Inspect CSpace authority and security invariants");
-            println!("  cd <path>            - Traverse to a linked Capability Map (e.g. 'cd etc')");
-            println!("  pwd                  - Print current capability map reference");
-            println!("  clear                - Clear canvas and redraw obsidian status header");
+            println!("  cd <path>            - Change working directory");
+            println!("  pwd                  - Print current directory path");
+            println!("  clear                - Clear console canvas");
             println!("  reboot               - Trigger hardware system reboot");
             println!();
             ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Cyan
-            println!("Standalone C & ASM Executables (in bin/):");
+            println!("Available Executables (/bin):");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
-            println!("  echo <text> [> f]    - C executable: print text or redirect to file");
-            println!("  ls [map]             - C executable: enumerate capability map entries");
-            println!("  cat <file>           - C executable: print content of file capability");
-            println!("  whoami               - ASM executable: query active user authority keyring");
-            println!("  axe <file>           - C executable: fullscreen code & text editor");
-            println!();
+
+            // Dynamically execute all binaries registered in /bin with -dh
+            let graph = unsafe { &mut GRAPH };
+            if let Some(bin_token) = graph.lookup(0, "bin") {
+                let bin_node = &graph.nodes[bin_token.target_id];
+                if bin_node.kind == GraphObjectKind::DirectoryMap {
+                    for link in bin_node.entries.iter() {
+                        if link.in_use {
+                            let target = &graph.nodes[link.token.target_id];
+                            if target.kind == GraphObjectKind::Blob && target.data_len > 0 {
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(target.data_ptr, USER_EXEC_BASE, target.data_len);
+                                }
+                                let mut arg0 = [0u8; 32];
+                                let nlen = core::cmp::min(link.name_len, 31);
+                                arg0[..nlen].copy_from_slice(&link.name[..nlen]);
+
+                                let mut arg1 = [0u8; 8];
+                                arg1[..3].copy_from_slice(b"-dh");
+
+                                let argv_ptrs: [*const u8; 2] = [arg0.as_ptr(), arg1.as_ptr()];
+                                let keyring = CapKeyring {
+                                    user_id: 0,
+                                    rights: 0b1111,
+                                    storage_cap: &raw const MAP_CTX as u64,
+                                    console_cap: 0x100000005,
+                                    user_name: [0; 32],
+                                };
+
+                                let entry: extern "C" fn(i32, *const *const u8, *const CapKeyring) -> i32 =
+                                    unsafe { core::mem::transmute(USER_EXEC_BASE as *const ()) };
+                                let _ = entry(2, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
+                            }
+                        }
+                    }
+                }
+            }
+
             ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald
-            println!("Ledger Override Syntax:");
+            println!();
+            println!("Ledger Override:");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
             println!("  curr <command>       - Execute binary with caller's current keyrings (ledger bypassed)");
             return;
@@ -243,22 +266,39 @@ fn execute_command(input: &str, current_map: &mut usize) {
         "cd" => {
             if arg_str.is_empty() || arg_str == "~" || arg_str == "/" {
                 *current_map = 0;
+                cwd[0] = b'/';
+                *cwd_len = 1;
+            } else if arg_str == ".." {
+                *current_map = 0;
+                cwd[0] = b'/';
+                *cwd_len = 1;
             } else if let Some(token) = unsafe { GRAPH.lookup(*current_map, arg_str) } {
                 if unsafe { GRAPH.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap } {
                     *current_map = token.target_id;
+                    let clean = arg_str.trim_matches('/');
+                    if *cwd_len == 1 && cwd[0] == b'/' {
+                        let clen = core::cmp::min(clean.len(), 62);
+                        cwd[1..1 + clen].copy_from_slice(&clean.as_bytes()[..clen]);
+                        *cwd_len = 1 + clen;
+                    } else if *cwd_len < 60 {
+                        cwd[*cwd_len] = b'/';
+                        let clen = core::cmp::min(clean.len(), 62 - *cwd_len - 1);
+                        cwd[*cwd_len + 1..*cwd_len + 1 + clen].copy_from_slice(&clean.as_bytes()[..clen]);
+                        *cwd_len += 1 + clen;
+                    }
                 } else {
-                    println!("cd: {}: Not a capability map", arg_str);
+                    println!("cd: {}: Not a directory", arg_str);
                 }
             } else {
-                println!("cd: {}: No such capability map", arg_str);
+                println!("cd: {}: No such file or directory", arg_str);
             }
             return;
         },
         "pwd" => {
-            if *current_map == 0 {
-                println!("/");
+            if let Ok(p) = core::str::from_utf8(&cwd[..*cwd_len]) {
+                println!("{}", p);
             } else {
-                println!("CapMap #{}", *current_map);
+                println!("/");
             }
             return;
         },
@@ -280,12 +320,93 @@ fn execute_command(input: &str, current_map: &mut usize) {
     // 4. Resolve binary in bin/ or via path
     let graph = unsafe { &mut GRAPH };
 
-    // Try looking up in bin/<cmd>.bin, bin/<cmd>, or <cmd>
-    let mut target_token = graph.lookup(0, cmd);
+    // Check for redirection in argument (e.g. echo hello > test.txt)
+    let (exec_args, redirect_file) = if let Some(arrow_idx) = arg_str.find('>') {
+        let text_part = arg_str[..arrow_idx].trim();
+        let file_part = arg_str[arrow_idx + 1..].trim();
+        (text_part, Some(file_part))
+    } else {
+        (arg_str, None)
+    };
+
+    // If redirected with echo, write file directly and do not echo to screen
+    if let Some(fname) = redirect_file {
+        if !fname.is_empty() {
+            let mut file_data = [0u8; 512];
+            let raw_text = exec_args.trim_matches('"').trim_matches('\'');
+            let tb = raw_text.as_bytes();
+            let flen = core::cmp::min(tb.len(), 510);
+            file_data[..flen].copy_from_slice(&tb[..flen]);
+            file_data[flen] = b'\n';
+
+            if let Err(e) = graph.write_file(*current_map, fname, &file_data[..flen + 1]) {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("echo: {}: {}", fname, e);
+            }
+            return;
+        }
+    }
+
+    // Determine target map for directory listings
+    let target_map_id = if cmd == "ls" && !exec_args.is_empty() && exec_args != "-dh" {
+        if let Some(token) = graph.lookup(*current_map, exec_args) {
+            if graph.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap {
+                token.target_id
+            } else {
+                println!("ls: cannot access '{}': Not a directory", exec_args);
+                return;
+            }
+        } else {
+            println!("ls: cannot access '{}': No such file or directory", exec_args);
+            return;
+        }
+    } else {
+        *current_map
+    };
+
+    // Populate MAP_CTX so ls.bin can read entries
+    unsafe {
+        let map_node = &graph.nodes[target_map_id];
+        let mut count = 0;
+        for link in map_node.entries.iter() {
+            if link.in_use && count < 16 {
+                let ent = &mut MAP_CTX.entries[count];
+                ent.name = link.name;
+                let target = &graph.nodes[link.token.target_id];
+                ent.is_dir = if target.kind == GraphObjectKind::DirectoryMap { 1 } else { 0 };
+                ent.data_len = target.data_len as u32;
+                ent.rights = link.token.rights;
+                ent.in_use = 1;
+                ent._pad = [0; 6];
+                ent.data = target.data_ptr;
+                count += 1;
+            }
+        }
+        MAP_CTX.count = count as u32;
+    }
+
+    // Try looking up:
+    // 1. bin/<cmd>.bin
+    // 2. bin/<cmd>
+    // 3. <current_map>/<cmd>
+    // 4. <current_map>/<cmd>.bin
+    let mut target_token = None;
+
+    {
+        let mut bin_path: [u8; 64] = [0; 64];
+        bin_path[..4].copy_from_slice(b"bin/");
+        let cmd_bytes = cmd.as_bytes();
+        let clen = core::cmp::min(cmd_bytes.len(), 45);
+        bin_path[4..4 + clen].copy_from_slice(&cmd_bytes[..clen]);
+        bin_path[4 + clen..4 + clen + 4].copy_from_slice(b".bin");
+        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..4 + clen + 4]) {
+            target_token = graph.lookup(0, bp_str);
+        }
+    }
+
     if target_token.is_none() {
         let mut bin_path: [u8; 64] = [0; 64];
-        let pfx = b"bin/";
-        bin_path[..4].copy_from_slice(pfx);
+        bin_path[..4].copy_from_slice(b"bin/");
         let cmd_bytes = cmd.as_bytes();
         let clen = core::cmp::min(cmd_bytes.len(), 50);
         bin_path[4..4 + clen].copy_from_slice(&cmd_bytes[..clen]);
@@ -293,16 +414,19 @@ fn execute_command(input: &str, current_map: &mut usize) {
             target_token = graph.lookup(0, bp_str);
         }
     }
+
+    if target_token.is_none() {
+        target_token = graph.lookup(*current_map, cmd);
+    }
+
     if target_token.is_none() {
         let mut bin_path: [u8; 64] = [0; 64];
-        let pfx = b"bin/";
-        bin_path[..4].copy_from_slice(pfx);
         let cmd_bytes = cmd.as_bytes();
-        let clen = core::cmp::min(cmd_bytes.len(), 45);
-        bin_path[4..4 + clen].copy_from_slice(&cmd_bytes[..clen]);
-        bin_path[4 + clen..4 + clen + 4].copy_from_slice(b".bin");
-        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..4 + clen + 4]) {
-            target_token = graph.lookup(0, bp_str);
+        let clen = core::cmp::min(cmd_bytes.len(), 50);
+        bin_path[..clen].copy_from_slice(&cmd_bytes[..clen]);
+        bin_path[clen..clen + 4].copy_from_slice(b".bin");
+        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..clen + 4]) {
+            target_token = graph.lookup(*current_map, bp_str);
         }
     }
 
@@ -320,61 +444,16 @@ fn execute_command(input: &str, current_map: &mut usize) {
 
     let target_node = &graph.nodes[token.target_id];
     if target_node.kind != GraphObjectKind::Blob {
-        println!("axiom: {}: Cannot execute directory map", cmd);
+        println!("axiom: {}: Is a directory", cmd);
         return;
     }
 
-    // 5. Query Shell Capability Ledger
-    let ledger_rights_str = graph.get_ledger_rights(cmd).unwrap_or("console:read,console:write");
-
-    // Display Dispatch Notice
-    if is_curr {
-        ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
-        print!("[ DISPATCH ] ");
-        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
-        println!("Executing {} with CURRENT user keyring (ledger bypassed)", cmd);
-    } else {
-        ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
-        print!("[ DISPATCH ] ");
-        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
-        println!("Executing {} with ledger keyring: {}", cmd, ledger_rights_str);
-    }
-
-    // Check for redirection in argument (e.g. echo hello > test.txt)
-    let (exec_args, redirect_file) = if let Some(arrow_idx) = arg_str.find('>') {
-        let text_part = arg_str[..arrow_idx].trim();
-        let file_part = arg_str[arrow_idx + 1..].trim();
-        (text_part, Some(file_part))
-    } else {
-        (arg_str, None)
-    };
-
-    // 6. Populate CapMapContext so ls.bin and cat.bin can read entries
-    unsafe {
-        let cur_node = &graph.nodes[*current_map];
-        let mut count = 0;
-        for link in cur_node.entries.iter() {
-            if link.in_use && count < 16 {
-                let ent = &mut MAP_CTX.entries[count];
-                ent.name = link.name;
-                let target = &graph.nodes[link.token.target_id];
-                ent.is_dir = if target.kind == GraphObjectKind::DirectoryMap { 1 } else { 0 };
-                ent.data_len = target.data_len as u32;
-                ent.rights = link.token.rights;
-                ent.in_use = 1;
-                ent.data = target.data_ptr;
-                count += 1;
-            }
-        }
-        MAP_CTX.count = count as u32;
-    }
-
-    // 7. Prepare CapKeyring
+    // 5. Prepare CapKeyring
     let mut username_buf = [0u8; 32];
     username_buf[..4].copy_from_slice(b"root");
 
     // If command is `cat`, resolve target file blob pointer directly
-    let storage_cap_val = if cmd == "cat" && !exec_args.is_empty() {
+    let storage_cap_val = if cmd == "cat" && !exec_args.is_empty() && exec_args != "-dh" {
         if let Some(target_token) = graph.lookup(*current_map, exec_args) {
             let target = &graph.nodes[target_token.target_id];
             if target.kind == GraphObjectKind::Blob {
@@ -397,13 +476,12 @@ fn execute_command(input: &str, current_map: &mut usize) {
         user_name: username_buf,
     };
 
-    // 8. Copy binary machine code into execution page at 0x500000
+    // 6. Copy binary machine code into execution page at 0x500000
     unsafe {
         core::ptr::copy_nonoverlapping(target_node.data_ptr, USER_EXEC_BASE, target_node.data_len);
     }
 
-    // 9. Prepare argc and argv in memory
-    // String buffers for arguments
+    // 7. Prepare argc and argv in memory
     let mut arg0_buf = [0u8; 32];
     let cmd_b = cmd.as_bytes();
     arg0_buf[..cmd_b.len()].copy_from_slice(cmd_b);
@@ -424,32 +502,9 @@ fn execute_command(input: &str, current_map: &mut usize) {
         1
     };
 
-    // 10. Execute C / ASM binary at 0x500000
+    // 8. Execute C / ASM binary at 0x500000
     let entry: extern "C" fn(i32, *const *const u8, *const CapKeyring) -> i32 =
         unsafe { core::mem::transmute(USER_EXEC_BASE as *const ()) };
 
     let _ret = entry(argc, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
-
-    // 11. Handle file redirection if '>' was specified
-    if let Some(fname) = redirect_file {
-        if !fname.is_empty() {
-            let mut file_data = [0u8; 512];
-            let raw_text = exec_args.trim_matches('"').trim_matches('\'');
-            let tb = raw_text.as_bytes();
-            let flen = core::cmp::min(tb.len(), 510);
-            file_data[..flen].copy_from_slice(&tb[..flen]);
-            file_data[flen] = b'\n';
-
-            match graph.write_file(*current_map, fname, &file_data[..flen + 1]) {
-                Ok(_) => {
-                    ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
-                    println!("[ OK ] Written to capability: {}", fname);
-                },
-                Err(e) => {
-                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
-                    println!("echo: {}: {}", fname, e);
-                }
-            }
-        }
-    }
 }

@@ -45,6 +45,10 @@ static void render_editor(const char* filename) {
 
 int main(int argc, char** argv, CapKeyring* keyring) {
     (void)keyring;
+    if (argc > 1 && strcmp(argv[1], "-dh") == 0) {
+        axiom_println("  axe                  - fullscreen visual text and code editor");
+        return 0;
+    }
     const char* filename = (argc > 1) ? argv[1] : "new_file.txt";
     
     // Clear buffer

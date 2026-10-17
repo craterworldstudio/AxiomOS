@@ -10,6 +10,30 @@ _start:
     push r12
     push r13
 
+    ; Check if argc >= 2
+    cmp rdi, 2
+    jl .print_default
+
+    ; argv is in rsi. argv[1] is at [rsi + 8]
+    mov rax, [rsi + 8]
+    test rax, rax
+    jz .print_default
+
+    ; Check if argv[1] is "-dh"
+    cmp byte [rax], '-'
+    jne .print_default
+    cmp byte [rax + 1], 'd'
+    jne .print_default
+    cmp byte [rax + 2], 'h'
+    jne .print_default
+    cmp byte [rax + 3], 0
+    jne .print_default
+
+    lea rbx, [msg_dh]
+    mov r12, msg_dh_len
+    jmp .loop
+
+.print_default:
     lea rbx, [msg]
     mov r12, msg_len
 
@@ -44,3 +68,6 @@ _start:
 section .rodata
 msg: db "root (Authority Keyring #0: Genesis Sovereign)", 10
 msg_len equ $ - msg
+
+msg_dh: db "  whoami               - display active user identity and authority keyring", 10
+msg_dh_len equ $ - msg_dh

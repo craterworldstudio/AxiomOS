@@ -49,6 +49,23 @@ typedef struct {
     char     user_name[32];
 } CapKeyring;
 
+// CapGraph directory entry header matching Genesis layout (56 bytes)
+typedef struct {
+    char        name[32];
+    uint32_t    is_dir;
+    uint32_t    data_len;
+    uint8_t     rights;
+    uint8_t     in_use;
+    uint8_t     _pad[6];
+    const void* data;
+} CapEntryInfo;
+
+// Capability Map Context structure (896 + 4 + 4 pad = 904 bytes)
+typedef struct {
+    CapEntryInfo entries[16];
+    uint32_t     count;
+} CapMapContext;
+
 // Hardware fast-path syscall gateway
 static inline uint64_t axiom_syscall(uint64_t handle, uint64_t op, uint64_t arg1, uint64_t arg2) {
     uint64_t ret;
