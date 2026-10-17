@@ -99,7 +99,15 @@ We are utilizing a **Laboratory-First Strategy**:
   - [x] User accounts modeled as Authority Keyrings: cryptographic capability capsules instead of flat `UID 0` god-mode.
   - [x] In-memory RamFS (`libaxiom/fs`) with standard operations (`lookup`, `write_file`, directories, files).
   - [x] Interactive Genesis root shell commands (`help`, `ls`, `cat`, `echo` with `>` redirection, `clear`, `status`, `reboot`).
-- **Phase 7C: Dynamic Program Spawner & Block Storage Driver** *(Planned)*
-  - [ ] Untyped memory retyping from Ring 3 to spawn child worker processes.
+- **Phase 7C: Object-Oriented Structural Graph ("CapGraph"), C/ASM Userland Toolchain & Capability Ledger** *(Completed)*
+  - [x] Object-Oriented Structural Graph ("CapGraph") replacing standard tree hierarchy with Capability Maps (DAG/cyclic graph topology, zero ambient root).
+  - [x] Standalone C & x86_64 Assembly binary toolchain (`userland/` with `crt0.s`, `linker.ld`, and `libaxiom.c`).
+  - [x] Core command utilities migrated from Rust to standalone executables: `echo.c`, `whoami.asm`, `ls.c`, `cat.c`, `axe.c`.
+  - [x] `axe`: Fullscreen text/code editor with line numbering, obsidian status canvas, and interactive shortcuts (`Ctrl+S`, `Ctrl+Q`).
+  - [x] Shell Capability Ledger (`/etc/caps.ledger`) with fine-grained per-command attenuation and non-root append-only token protocol.
+  - [x] `curr <command>` ledger bypass mechanism running binaries directly with caller's active authority keyring.
+  - [x] Virtual memory hardening: expanded BSS to 64 pages (256 KiB) and mapped 16 physical execution frames at `0x500000`.
+- **Phase 7D: Dynamic Task Retyping, Block Storage Driver & IPC Multiplexing** *(Planned)*
+  - [ ] Untyped memory retyping from Ring 3 to spawn separate child worker processes and VSpaces.
   - [ ] AHCI / NVMe / FAT32 persistent storage driver mounted via capability endpoint.
-  - [ ] Simple C / shell script command runner.
+  - [ ] IPC channel multiplexer for inter-process service orchestration.

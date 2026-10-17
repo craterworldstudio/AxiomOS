@@ -28,6 +28,9 @@ else
     CARGO_FLAGS=""
 fi
 
+echo "[BUILD] Compiling Standalone C and ASM Userland Binaries..."
+make -C userland
+
 echo "[BUILD] Compiling Genesis Process (axiom_genesis)..."
 cargo build -p axiom_genesis --target x86_64-unknown-none
 objcopy -O binary target/x86_64-unknown-none/debug/axiom_genesis target/x86_64-unknown-none/debug/axiom_genesis.bin

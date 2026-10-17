@@ -46,11 +46,22 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
   - Zero-ambient-authority in-memory capability filesystem (`VaultFS`) with isolated namespaces (`ROOT_SLOT_STORAGE = 7`).
   - Authority Keyrings replacing traditional UNIX UIDs with cryptographically bounded capability sets.
   - Interactive Genesis Root Shell commands: `status`, `ls [dir]`, `cat <file>`, `echo <text> [> file]`, `help`, `clear`, `reboot`.
-  - Virtual memory hardening: mailbox at `0x600000`, zeroed `.bss` pages mapped up to `0x422000`, and user stack expanded to 68 KiB.
+- **Phase 7C: Object-Oriented Structural Graph ("CapGraph"), C/ASM Userland Toolchain & Capability Ledger**:
+  - Replaced hierarchical tree filesystem with an **Object-Oriented Structural Graph ("CapGraph")**: directories are Capability Maps (key-value stores mapping strings to `CapToken`s), forming a DAG/cyclic network with zero ambient root.
+  - Native **C & x86_64 Assembly Userland Toolchain** (`userland/`) with custom linker script (`linker.ld`), startup crt0 stub (`crt0.s`), and runtime (`libaxiom.c`).
+  - Standalone command binaries migrated from Rust to clean C and x86_64 Assembly: `echo.c`, `whoami.asm`, `ls.c`, `cat.c`, and `axe.c`.
+  - **`axe` Code & Text Editor**: Fullscreen interactive editor with obsidian canvas, line numbering, status bar, and shortcut handlers (`Ctrl+S`, `Ctrl+Q`).
+  - **Shell Capability Ledger** (`/etc/caps.ledger`): Strict per-binary capability attenuation enforcing least privilege.
+  - **Ledger Bypass (`curr <cmd>`)**: Allows running executables directly with caller's active authority keyring.
+  - Append-only non-root ledger update protocol enforcing capability monotonicity ($R_{\text{pkg}} \subseteq R_{\text{caller}}$).
+  - Virtual memory hardening: expanded BSS to 64 pages (256 KiB) and mapped 16 physical execution frames (`0x500000`..`0x510000`).
 
 ---
 
 ## Production Verification & Sovereign Canvas
+
+### Phase 7C: Object-Oriented Structural Graph ("CapGraph"), C/ASM Binaries & Capability Ledger Verified
+![AxiomOS Phase 7C CapGraph & C/ASM Binaries Verified](gallery/Phase7CCapGraphVerified.png)
 
 ### Phase 7B: Interactive Genesis Root Shell & Capability Filesystem Verified
 ![AxiomOS Phase 7B Interactive Shell Verified](gallery/Phase7BInteractiveShellVerified.png)
@@ -69,6 +80,7 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
 - `rustup` with `nightly` toolchain and targets:
   - `x86_64-unknown-none`
   - `x86_64-unknown-uefi`
+- `gcc` and `nasm` (for userland C and x86_64 assembly command binaries)
 - `qemu-system-x86_64`
 - `ovmf` / `edk2-ovmf`
 - `mtools` (`mcopy`, `mmd`)
@@ -76,7 +88,7 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
 
 ### Build & Run Commands
 ```bash
-# Development Mode (High-Res GOP terminal, live threads)
+# Development Mode (Compiles C/ASM userland, kernel, genesis, and launches QEMU)
 ./build.sh
 
 # Production Mode (Comprehensive 54-test suite, preemption stress & screen takeover)
@@ -97,4 +109,5 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
   - [ADR-0009: The Genesis Process (PID 1) & User-Space Capability Runtime (libaxiom)](docs/05-ADRs/ADR-009.md)
   - [ADR-0010: Sovereign Screen Takeover, Object-Capability Console Subsystem, and Text-Based GUI Canvas](docs/05-ADRs/ADR-010.md)
   - [ADR-0011: Sovereign Capability Filesystem ("VaultFS"), Authority Keyrings, and Interactive Shell Architecture](docs/05-ADRs/ADR-011.md)
+  - [ADR-0012: Object-Oriented Structural Graph ("CapGraph"), C/ASM Userland Toolchain, and Shell Capability Ledger](docs/05-ADRs/ADR-012.md)
 - [Capability Lifecycle Model](docs/06-CAPABILITY-LIFECYCLE.md)

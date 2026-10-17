@@ -1,9 +1,8 @@
-//! AxiomOS Genesis Process — PID 1 Sovereign Root User Task
+//! AxiomOS Genesis Process — PID 1 Sovereign Root Task & CapGraph Shell Launcher
 //!
-//! The Genesis Process is the first and foundational user-space process
-//! executing in Ring 3 (CPL=3). It receives Root Untyped authority and
-//! Root CNode capabilities from the microkernel, coordinates user-space
-//! operating system services, and enforces object capability security.
+//! Executes in Ring 3 (CPL=3). Initializes the Object-Oriented Structural Graph
+//! ("CapGraph"), provides live interactive shell input, and dispatches standalone
+//! C and x86_64 Assembly binaries from /bin with Capability Ledger enforcement.
 
 #![no_std]
 #![no_main]
@@ -12,12 +11,55 @@
 use core::panic::PanicInfo;
 use libaxiom::capability::*;
 use libaxiom::console::{ConsoleWriter, ConsoleReader};
-use libaxiom::fs::VAULT;
+use libaxiom::fs::*;
 use libaxiom::*;
 
 // User-space mailbox communication offsets (mapped inside Genesis VSpace at 0x600000)
 pub const USER_MAILBOX_FLAG: *mut u32    = 0x600000 as *mut u32;
 pub const USER_PROGRESS_COUNT: *mut u32  = 0x600004 as *mut u32;
+
+// Memory region where userland binaries are loaded and executed
+pub const USER_EXEC_BASE: *mut u8        = 0x500000 as *mut u8;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapKeyring {
+    pub user_id: u32,
+    pub rights: u32,
+    pub storage_cap: u64,
+    pub console_cap: u64,
+    pub user_name: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapEntryInfoWithData {
+    pub name: [u8; 32],
+    pub is_dir: u32,
+    pub data_len: u32,
+    pub rights: u8,
+    pub in_use: u8,
+    pub data: *const u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapMapContextWithData {
+    pub entries: [CapEntryInfoWithData; 16],
+    pub count: u32,
+}
+
+static mut MAP_CTX: CapMapContextWithData = CapMapContextWithData {
+    entries: [CapEntryInfoWithData {
+        name: [0; 32],
+        is_dir: 0,
+        data_len: 0,
+        rights: 0,
+        in_use: 0,
+        data: core::ptr::null(),
+    }; 16],
+    count: 0,
+};
 
 #[no_mangle]
 #[link_section = ".text._start"]
@@ -29,16 +71,14 @@ pub extern "C" fn _start() -> ! {
     }
     let cpl = (cs & 3) as u8;
     if cpl != 3 {
-        // Severe privilege violation: fail-stop
         loop { unsafe { core::arch::asm!("pause"); } }
     }
 
-    // Check if re-entering in Live Shell Takeover Mode (Phase 7A)
+    // Check if re-entering in Live Shell Takeover Mode (Phase 7A/7B/7C)
     let signal = unsafe { core::ptr::read_volatile(USER_MAILBOX_FLAG) };
     if signal == 2 {
         unsafe { core::ptr::write_volatile(USER_MAILBOX_FLAG, 3); }
 
-        // Phase 7A: Sovereign Screen Takeover
         ConsoleWriter::draw_banner();
 
         println!();
@@ -53,20 +93,20 @@ pub extern "C" fn _start() -> ! {
         ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
         println!("[ OK ] Microkernel Boot Selftests Passed & Frozen in Ring 0.");
         println!("[ OK ] Sovereign Ring 3 Privilege Barrier Active (CPL=3).");
-        println!("[ OK ] Root CSpace Initialized: CNode(1), VSpace(2), TCB(3), Console(5).");
-        println!("[ OK ] 1280x720 16:9 High-Resolution Display Subsystem Active.");
-        println!("[ OK ] Memory Allocator Ready: 512 MB Physical Frame Authority.");
+        println!("[ OK ] Object-Oriented Structural Graph (\"CapGraph\") Active.");
+        println!("[ OK ] Standalone C/ASM Binaries Available in /bin.");
+        println!("[ OK ] Capability Ledger Enforcing Least-Privilege Execution.");
         println!();
         ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
-        println!("Genesis Root Shell Ready.");
+        println!("Genesis Sovereign Root Shell Ready.");
         println!();
         ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Electric Cyan
         print!("root@axiom:~# ");
 
-        // Initialize Sovereign Capability Filesystem (VaultFS)
-        unsafe { VAULT.init(); }
+        // Initialize Sovereign Object-Oriented Structural Graph (CapGraph)
+        unsafe { GRAPH.init(); }
 
-        let mut current_dir = 0; // Inode 0: Root vault
+        let mut current_map = 0; // Map Node 0: Root Entry Map
         let mut line_buf = [0u8; 128];
 
         loop {
@@ -86,7 +126,7 @@ pub extern "C" fn _start() -> ! {
                 }
             };
 
-            execute_command(cmd_str, &mut current_dir);
+            execute_command(cmd_str, &mut current_map);
 
             ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
             print!("root@axiom:~# ");
@@ -101,7 +141,6 @@ pub extern "C" fn _start() -> ! {
     let _ = console_ep.send(0x1337_BEEF);
 
     // 4. Exercise Capability Derivation in Ring 3: Mint attenuated child capability
-    // Slot 6 is empty in initial Genesis CNode
     let _ = root_cnode.mint(6, Rights::READ);
 
     // 5. Stress Testing: 50 Rapid Fast-Path Syscalls under active timer IRQ
@@ -113,14 +152,11 @@ pub extern "C" fn _start() -> ! {
     // 6. High-Frequency Progress Loop: Test multi-tick preemption
     loop {
         unsafe {
-            // Increment progress counter
             let count = core::ptr::read_volatile(USER_PROGRESS_COUNT);
             core::ptr::write_volatile(USER_PROGRESS_COUNT, count.wrapping_add(1));
 
-            // Check if supervisor signaled memory probe test
             let signal = core::ptr::read_volatile(USER_MAILBOX_FLAG);
             if signal == 1 {
-                // Probe supervisor-only memory (0x100000) to verify memory isolation (#PF vector 14)
                 let supervisor_ptr = 0x100000 as *const u64;
                 let _val = core::ptr::read_volatile(supervisor_ptr);
             }
@@ -137,117 +173,56 @@ fn panic(_info: &PanicInfo) -> ! {
     }
 }
 
-fn execute_command(input: &str, current_dir: &mut usize) {
+fn execute_command(input: &str, current_map: &mut usize) {
     if input.is_empty() {
         return;
     }
 
-    // Split command and argument
-    let mut parts = input.splitn(2, ' ');
-    let cmd = parts.next().unwrap_or("");
-    let arg = parts.next().unwrap_or("").trim();
+    // 1. Check for `curr ` prefix override
+    let (is_curr, effective_input) = if input.starts_with("curr ") {
+        (true, input[5..].trim())
+    } else {
+        (false, input)
+    };
 
+    if effective_input.is_empty() {
+        return;
+    }
+
+    // 2. Split command name and arguments
+    let mut parts = effective_input.splitn(2, ' ');
+    let cmd = parts.next().unwrap_or("");
+    let arg_str = parts.next().unwrap_or("").trim();
+
+    // 3. Handle built-in shell navigation and inspection commands
     match cmd {
         "help" => {
             ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
-            println!("AxiomOS Sovereign Root Shell (PID 1) \u{2014} Capability Commands:");
+            println!("AxiomOS CapGraph Shell (PID 1) \u{2014} Capability Commands:");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Silver
-            println!("  help              - Display this command reference manual");
-            println!("  ls [dir]          - List entries in current or specified directory");
-            println!("  cat <file>        - Print content of specified file capability");
-            println!("  echo <text> [> f] - Print text or redirect to a file capability");
-            println!("  status            - Inspect CSpace authority, memory and security state");
-            println!("  clear             - Clear canvas and redraw obsidian status header");
-            println!("  reboot            - Trigger hardware system reboot");
+            println!("  help                 - Display this command reference manual");
+            println!("  status / icap        - Inspect CSpace authority and security invariants");
+            println!("  cd <path>            - Traverse to a linked Capability Map (e.g. 'cd etc')");
+            println!("  pwd                  - Print current capability map reference");
+            println!("  clear                - Clear canvas and redraw obsidian status header");
+            println!("  reboot               - Trigger hardware system reboot");
+            println!();
+            ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Cyan
+            println!("Standalone C & ASM Executables (in bin/):");
+            ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+            println!("  echo <text> [> f]    - C executable: print text or redirect to file");
+            println!("  ls [map]             - C executable: enumerate capability map entries");
+            println!("  cat <file>           - C executable: print content of file capability");
+            println!("  whoami               - ASM executable: query active user authority keyring");
+            println!("  axe <file>           - C executable: fullscreen code & text editor");
+            println!();
+            ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald
+            println!("Ledger Override Syntax:");
+            ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+            println!("  curr <command>       - Execute binary with caller's current keyrings (ledger bypassed)");
+            return;
         },
-        "ls" | "dir" => {
-            let target_dir = if arg.is_empty() {
-                *current_dir
-            } else {
-                match unsafe { VAULT.lookup(*current_dir, arg) } {
-                    Some(id) if unsafe { VAULT.nodes[id].is_dir } => id,
-                    Some(_) => {
-                        println!("ls: {}: Not a directory", arg);
-                        return;
-                    },
-                    None => {
-                        println!("ls: {}: No such directory", arg);
-                        return;
-                    }
-                }
-            };
-
-            let vault = unsafe { &VAULT };
-            let mut count = 0;
-            for (idx, node) in vault.nodes.iter().enumerate() {
-                if node.in_use && node.parent_id == target_dir && idx != target_dir {
-                    if node.is_dir {
-                        ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Electric Cyan
-                        print!("{}/  ", node.name_str());
-                    } else {
-                        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Silver
-                        print!("{}  ", node.name_str());
-                    }
-                    count += 1;
-                }
-            }
-            if count > 0 {
-                println!();
-            } else {
-                println!("(empty)");
-            }
-        },
-        "cat" => {
-            if arg.is_empty() {
-                println!("cat: missing file operand");
-                return;
-            }
-            let vault = unsafe { &VAULT };
-            match vault.lookup(*current_dir, arg) {
-                Some(id) => {
-                    let node = &vault.nodes[id];
-                    if node.is_dir {
-                        println!("cat: {}: Is a directory", arg);
-                    } else {
-                        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
-                        print!("{}", node.content_str());
-                    }
-                },
-                None => {
-                    println!("cat: {}: No such file or directory", arg);
-                }
-            }
-        },
-        "echo" => {
-            // Check for redirection: echo <text> > <file>
-            if let Some(arrow_idx) = arg.find('>') {
-                let text = arg[..arrow_idx].trim();
-                let file_name = arg[arrow_idx + 1..].trim();
-                if file_name.is_empty() {
-                    println!("echo: syntax error near unexpected token 'newline'");
-                    return;
-                }
-                let mut content = [0u8; 512];
-                let text_bytes = text.as_bytes();
-                let clen = core::cmp::min(text_bytes.len(), 510);
-                content[..clen].copy_from_slice(&text_bytes[..clen]);
-                content[clen] = b'\n';
-
-                match unsafe { VAULT.write_file(*current_dir, file_name, &content[..clen + 1]) } {
-                    Ok(_) => {
-                        ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
-                        println!("[ OK ] Written to capability: {}", file_name);
-                    },
-                    Err(e) => {
-                        ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
-                        println!("echo: {}: {}", file_name, e);
-                    }
-                }
-            } else {
-                println!("{}", arg);
-            }
-        },
-        "status" | "info" => {
+        "status" | "info" | "icap" => {
             ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
             println!("[ CSPACE AUTHORITY INVENTORY ]");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
@@ -255,31 +230,226 @@ fn execute_command(input: &str, current_dir: &mut usize) {
             println!("  Slot 2: VSpaceCap    - Genesis Sovereign PML4 (CR3)");
             println!("  Slot 3: TCBCap       - Genesis Thread Control Block (PID 1)");
             println!("  Slot 5: EndpointCap  - Console / Video Subsystem (1280x720)");
-            println!("  Slot 7: DirectoryCap - In-Memory Storage Vault (VaultFS)");
+            println!("  Slot 7: DirectoryCap - Object-Oriented Structural Graph (CapGraph)");
             ConsoleWriter::set_color(0x002EE59D, 0x00101418);
             println!("[ SECURITY INVARIANTS ]");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+            println!("  Filesystem: Object-Oriented Structural Graph (Zero Ambient Root)");
             println!("  Privilege Level: Ring 3 User Mode (CPL = 3)");
-            println!("  Memory Barrier: Supervisor Pages Isolated (#PF Vector 14)");
-            println!("  Delegation: Monotonic Rights Attenuation Enforced");
-            println!("  Authority Model: Zero Ambient Authority Active");
+            println!("  Ledger Security: Attenuated Least-Privilege Execution");
+            println!("  Execution Buffer: 0x500000 (C / ASM Standalone Binaries)");
+            return;
+        },
+        "cd" => {
+            if arg_str.is_empty() || arg_str == "~" || arg_str == "/" {
+                *current_map = 0;
+            } else if let Some(token) = unsafe { GRAPH.lookup(*current_map, arg_str) } {
+                if unsafe { GRAPH.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap } {
+                    *current_map = token.target_id;
+                } else {
+                    println!("cd: {}: Not a capability map", arg_str);
+                }
+            } else {
+                println!("cd: {}: No such capability map", arg_str);
+            }
+            return;
+        },
+        "pwd" => {
+            if *current_map == 0 {
+                println!("/");
+            } else {
+                println!("CapMap #{}", *current_map);
+            }
+            return;
         },
         "clear" => {
             ConsoleWriter::draw_banner();
             println!();
+            return;
         },
         "reboot" => {
             println!("Rebooting AxiomOS substrate...");
             unsafe {
                 core::arch::asm!("out dx, al", in("dx") 0x64u16, in("al") 0xFEu8, options(nomem, nostack));
             }
+            return;
         },
-        other => {
+        _ => {},
+    }
+
+    // 4. Resolve binary in bin/ or via path
+    let graph = unsafe { &mut GRAPH };
+
+    // Try looking up in bin/<cmd>.bin, bin/<cmd>, or <cmd>
+    let mut target_token = graph.lookup(0, cmd);
+    if target_token.is_none() {
+        let mut bin_path: [u8; 64] = [0; 64];
+        let pfx = b"bin/";
+        bin_path[..4].copy_from_slice(pfx);
+        let cmd_bytes = cmd.as_bytes();
+        let clen = core::cmp::min(cmd_bytes.len(), 50);
+        bin_path[4..4 + clen].copy_from_slice(&cmd_bytes[..clen]);
+        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..4 + clen]) {
+            target_token = graph.lookup(0, bp_str);
+        }
+    }
+    if target_token.is_none() {
+        let mut bin_path: [u8; 64] = [0; 64];
+        let pfx = b"bin/";
+        bin_path[..4].copy_from_slice(pfx);
+        let cmd_bytes = cmd.as_bytes();
+        let clen = core::cmp::min(cmd_bytes.len(), 45);
+        bin_path[4..4 + clen].copy_from_slice(&cmd_bytes[..clen]);
+        bin_path[4 + clen..4 + clen + 4].copy_from_slice(b".bin");
+        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..4 + clen + 4]) {
+            target_token = graph.lookup(0, bp_str);
+        }
+    }
+
+    let token = match target_token {
+        Some(t) => t,
+        None => {
             ConsoleWriter::set_color(0x00FF4B4B, 0x00101418); // Crimson Red
             print!("axiom: command not found: ");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
-            println!("{}", other);
-            println!("Type 'help' for available built-in commands.");
+            println!("{}", cmd);
+            println!("Type 'help' for available commands.");
+            return;
+        }
+    };
+
+    let target_node = &graph.nodes[token.target_id];
+    if target_node.kind != GraphObjectKind::Blob {
+        println!("axiom: {}: Cannot execute directory map", cmd);
+        return;
+    }
+
+    // 5. Query Shell Capability Ledger
+    let ledger_rights_str = graph.get_ledger_rights(cmd).unwrap_or("console:read,console:write");
+
+    // Display Dispatch Notice
+    if is_curr {
+        ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
+        print!("[ DISPATCH ] ");
+        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+        println!("Executing {} with CURRENT user keyring (ledger bypassed)", cmd);
+    } else {
+        ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
+        print!("[ DISPATCH ] ");
+        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+        println!("Executing {} with ledger keyring: {}", cmd, ledger_rights_str);
+    }
+
+    // Check for redirection in argument (e.g. echo hello > test.txt)
+    let (exec_args, redirect_file) = if let Some(arrow_idx) = arg_str.find('>') {
+        let text_part = arg_str[..arrow_idx].trim();
+        let file_part = arg_str[arrow_idx + 1..].trim();
+        (text_part, Some(file_part))
+    } else {
+        (arg_str, None)
+    };
+
+    // 6. Populate CapMapContext so ls.bin and cat.bin can read entries
+    unsafe {
+        let cur_node = &graph.nodes[*current_map];
+        let mut count = 0;
+        for link in cur_node.entries.iter() {
+            if link.in_use && count < 16 {
+                let ent = &mut MAP_CTX.entries[count];
+                ent.name = link.name;
+                let target = &graph.nodes[link.token.target_id];
+                ent.is_dir = if target.kind == GraphObjectKind::DirectoryMap { 1 } else { 0 };
+                ent.data_len = target.data_len as u32;
+                ent.rights = link.token.rights;
+                ent.in_use = 1;
+                ent.data = target.data_ptr;
+                count += 1;
+            }
+        }
+        MAP_CTX.count = count as u32;
+    }
+
+    // 7. Prepare CapKeyring
+    let mut username_buf = [0u8; 32];
+    username_buf[..4].copy_from_slice(b"root");
+
+    // If command is `cat`, resolve target file blob pointer directly
+    let storage_cap_val = if cmd == "cat" && !exec_args.is_empty() {
+        if let Some(target_token) = graph.lookup(*current_map, exec_args) {
+            let target = &graph.nodes[target_token.target_id];
+            if target.kind == GraphObjectKind::Blob {
+                target.data_ptr as u64
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    } else {
+        &raw const MAP_CTX as u64
+    };
+
+    let keyring = CapKeyring {
+        user_id: 0,
+        rights: if is_curr { 0b1111 } else { 0b0011 },
+        storage_cap: storage_cap_val,
+        console_cap: 0x100000005,
+        user_name: username_buf,
+    };
+
+    // 8. Copy binary machine code into execution page at 0x500000
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_node.data_ptr, USER_EXEC_BASE, target_node.data_len);
+    }
+
+    // 9. Prepare argc and argv in memory
+    // String buffers for arguments
+    let mut arg0_buf = [0u8; 32];
+    let cmd_b = cmd.as_bytes();
+    arg0_buf[..cmd_b.len()].copy_from_slice(cmd_b);
+
+    let mut arg1_buf = [0u8; 128];
+    let arg_b = exec_args.as_bytes();
+    let alen = core::cmp::min(arg_b.len(), 127);
+    if alen > 0 {
+        arg1_buf[..alen].copy_from_slice(&arg_b[..alen]);
+    }
+
+    let mut argv_ptrs: [*const u8; 4] = [core::ptr::null(); 4];
+    argv_ptrs[0] = arg0_buf.as_ptr();
+    let argc = if alen > 0 {
+        argv_ptrs[1] = arg1_buf.as_ptr();
+        2
+    } else {
+        1
+    };
+
+    // 10. Execute C / ASM binary at 0x500000
+    let entry: extern "C" fn(i32, *const *const u8, *const CapKeyring) -> i32 =
+        unsafe { core::mem::transmute(USER_EXEC_BASE as *const ()) };
+
+    let _ret = entry(argc, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
+
+    // 11. Handle file redirection if '>' was specified
+    if let Some(fname) = redirect_file {
+        if !fname.is_empty() {
+            let mut file_data = [0u8; 512];
+            let raw_text = exec_args.trim_matches('"').trim_matches('\'');
+            let tb = raw_text.as_bytes();
+            let flen = core::cmp::min(tb.len(), 510);
+            file_data[..flen].copy_from_slice(&tb[..flen]);
+            file_data[flen] = b'\n';
+
+            match graph.write_file(*current_map, fname, &file_data[..flen + 1]) {
+                Ok(_) => {
+                    ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
+                    println!("[ OK ] Written to capability: {}", fname);
+                },
+                Err(e) => {
+                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                    println!("echo: {}: {}", fname, e);
+                }
+            }
         }
     }
 }

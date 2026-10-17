@@ -582,7 +582,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     // Dynamically load all compiled Genesis binary pages into physical memory
     let bin_len = GENESIS_BIN.len();
     let num_pages = (bin_len + 4095) / 4096;
-    let bss_extra_pages = 16; // 64 KiB headroom for .bss and user data
+    let bss_extra_pages = 64; // 256 KiB headroom for CapGraph and user data
     let total_pages = num_pages + bss_extra_pages;
     for page_idx in 0..total_pages {
         let code_frame = bitmap_alloc.allocate_frame().unwrap();
@@ -605,6 +605,20 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         vspace.map_page(
             0x400000 + (page_idx as u64) * 4096,
             code_frame.start_address,
+            memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
+            &mut bitmap_alloc,
+        ).unwrap();
+    }
+
+    // Map user program execution pages at 0x500000 (16 pages = 64 KiB)
+    for exec_page in 0..16 {
+        let exec_frame = bitmap_alloc.allocate_frame().unwrap();
+        unsafe {
+            core::ptr::write_bytes(exec_frame.start_address as *mut u8, 0, 4096);
+        }
+        vspace.map_page(
+            0x500000 + (exec_page as u64) * 4096,
+            exec_frame.start_address,
             memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
             &mut bitmap_alloc,
         ).unwrap();
