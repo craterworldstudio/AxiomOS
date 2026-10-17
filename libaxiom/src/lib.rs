@@ -15,12 +15,14 @@ pub mod capability;
 pub mod ipc;
 pub mod allocator;
 pub mod console;
+pub mod fs;
 
 pub use syscall::{SyscallError, invoke, invoke_short};
 pub use capability::{CapHandle, Rights, ObjectKind, EndpointCap, CNodeCap};
 pub use ipc::{rpc_call, ipc_send, ipc_recv};
 pub use allocator::BumpAllocator;
-pub use console::ConsoleWriter;
+pub use console::{ConsoleWriter, ConsoleReader};
+pub use fs::{VaultFS, VAULT};
 
 // ============================================================================
 // ROOT CAPABILITY SLOTS (Genesis Process CSpace Initial Layout)
@@ -30,3 +32,4 @@ pub const ROOT_SLOT_VSPACE: usize  = 2; // Self Root VSpace (PML4) handle
 pub const ROOT_SLOT_TCB: usize     = 3; // Self Root TCB handle
 pub const ROOT_SLOT_UNTYPED: usize = 4; // Root Untyped memory authority handle
 pub const ROOT_SLOT_CONSOLE: usize = 5; // System console / video endpoint handle
+pub const ROOT_SLOT_STORAGE: usize = 7; // Root Storage VaultFS handle

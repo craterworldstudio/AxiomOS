@@ -91,13 +91,14 @@ We are utilizing a **Laboratory-First Strategy**:
   - [x] 1280x28 obsidian status bar (`#161B22`) with electric cyan accent line (`#00D2FF`) on 1280x720 16:9 canvas.
   - [x] User-space capability-backed print pipeline (`libaxiom::console::ConsoleWriter`).
   - [x] Clean screen takeover clearing boot selftest logs and presenting sovereign `root@axiom:~#` prompt.
-- **Phase 7B: Sovereign Capability Filesystem ("VaultFS" / "CapFS"), PS/2 Keyboard Driver & Interactive Shell** *(Current Milestone)*
-  - [ ] PS/2 Keyboard interrupt driver: IRQ 1 routed to capability endpoint for non-blocking stdin keystrokes.
-  - [ ] Capability Filesystem ("VaultFS"): Zero global ambient root `/`, directories and files as object capability endpoints.
-  - [ ] Per-process sovereign namespaces: processes only see directories delegated to them in CSpace.
-  - [ ] User accounts as Authority Keyrings: cryptographic capability capsules instead of flat `UID 0` god-mode.
-  - [ ] In-memory RamFS (`libaxiom/fs`) with standard operations (`LOOKUP`, `READ`, `WRITE`, `CREATE`, `LIST`).
-  - [ ] Interactive Genesis root shell commands (`help`, `ls`, `cat`, `echo`, `clear`, `status`, `reboot`).
+- **Phase 7B: Sovereign Capability Filesystem ("VaultFS" / "CapFS"), PS/2 Keyboard Driver & Interactive Shell** *(Completed)*
+  - [x] PS/2 Keyboard driver: Non-blocking keystroke query via `OP_CONSOLE_GETCHAR = 10` on Slot 5.
+  - [x] PC/AT Scancode Set 1 make/break decoder with shift combinations, symbols, Enter, and Backspace rubout.
+  - [x] Capability Filesystem ("VaultFS"): Zero global ambient root `/`, directories and files as object capability endpoints.
+  - [x] Per-process sovereign namespaces: processes only see directories delegated to them in CSpace (`ROOT_SLOT_STORAGE = 7`).
+  - [x] User accounts modeled as Authority Keyrings: cryptographic capability capsules instead of flat `UID 0` god-mode.
+  - [x] In-memory RamFS (`libaxiom/fs`) with standard operations (`lookup`, `write_file`, directories, files).
+  - [x] Interactive Genesis root shell commands (`help`, `ls`, `cat`, `echo` with `>` redirection, `clear`, `status`, `reboot`).
 - **Phase 7C: Dynamic Program Spawner & Block Storage Driver** *(Planned)*
   - [ ] Untyped memory retyping from Ring 3 to spawn child worker processes.
   - [ ] AHCI / NVMe / FAT32 persistent storage driver mounted via capability endpoint.

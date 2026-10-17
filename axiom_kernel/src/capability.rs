@@ -10,6 +10,7 @@ pub const OP_CONSOLE_WRITE: u64  = 6;
 pub const OP_CONSOLE_CLEAR: u64  = 7;
 pub const OP_CONSOLE_BANNER: u64 = 8;
 pub const OP_CONSOLE_COLOR: u64  = 9;
+pub const OP_CONSOLE_GETCHAR: u64 = 10;
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;
@@ -431,6 +432,12 @@ pub extern "C" fn sys_invoke_handler(
                     let console = unsafe { &raw mut crate::console::CONSOLE };
                     unsafe { (*console).set_color(arg1 as u32, arg2 as u32); }
                     SYSCALL_OK
+                },
+                OP_CONSOLE_GETCHAR => {
+                    if !cap.rights.contains(Rights::READ) { return ERR_INVALID_RIGHTS; }
+                    let console = unsafe { &raw mut crate::console::CONSOLE };
+                    let ch = unsafe { (*console).read_char() };
+                    ch as u64
                 },
                 _ => ERR_UNSUPPORTED_OP,
             }

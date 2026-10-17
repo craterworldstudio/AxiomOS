@@ -60,6 +60,58 @@ impl core::fmt::Write for ConsoleWriter {
     }
 }
 
+pub struct ConsoleReader;
+
+impl ConsoleReader {
+    /// Non-blocking query of a pending keystroke from the console capability.
+    pub fn get_char() -> Option<char> {
+        let ep = EndpointCap::from_handle(CapHandle::new(ROOT_SLOT_CONSOLE as u32, 1));
+        unsafe {
+            let res = invoke_short(ep.0.0, OP_CONSOLE_GETCHAR, 0, 0);
+            if res != 0 && res < 128 {
+                Some(res as u8 as char)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Reads a complete line of text from the console into `buf`.
+    /// Echoes characters visually to the console, handles Backspace rubout,
+    /// and returns the number of bytes read when Enter is pressed.
+    pub fn read_line(buf: &mut [u8]) -> usize {
+        let mut len = 0;
+        let max_len = buf.len();
+
+        loop {
+            if let Some(ch) = Self::get_char() {
+                if ch == '\n' {
+                    ConsoleWriter::write_str("\n");
+                    break;
+                } else if ch == '\x08' { // Backspace
+                    if len > 0 {
+                        len -= 1;
+                        ConsoleWriter::write_str("\x08");
+                    }
+                } else if (ch as u8) >= 32 && (ch as u8) <= 126 { // Printable ASCII
+                    if len + 1 < max_len {
+                        buf[len] = ch as u8;
+                        len += 1;
+                        let s = [ch as u8];
+                        if let Ok(slice_str) = core::str::from_utf8(&s) {
+                            ConsoleWriter::write_str(slice_str);
+                        }
+                    }
+                }
+            } else {
+                unsafe { core::arch::asm!("pause"); }
+            }
+        }
+
+        len
+    }
+}
+
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => ({

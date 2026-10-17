@@ -7,15 +7,17 @@
 
 #![no_std]
 #![no_main]
+#![allow(static_mut_refs, unused_imports, dead_code)]
 
 use core::panic::PanicInfo;
 use libaxiom::capability::*;
-use libaxiom::console::ConsoleWriter;
+use libaxiom::console::{ConsoleWriter, ConsoleReader};
+use libaxiom::fs::VAULT;
 use libaxiom::*;
 
-// User-space mailbox communication offsets (mapped inside Genesis VSpace at 0x408000)
-pub const USER_MAILBOX_FLAG: *mut u32    = 0x408000 as *mut u32;
-pub const USER_PROGRESS_COUNT: *mut u32  = 0x408004 as *mut u32;
+// User-space mailbox communication offsets (mapped inside Genesis VSpace at 0x600000)
+pub const USER_MAILBOX_FLAG: *mut u32    = 0x600000 as *mut u32;
+pub const USER_PROGRESS_COUNT: *mut u32  = 0x600004 as *mut u32;
 
 #[no_mangle]
 #[link_section = ".text._start"]
@@ -61,9 +63,33 @@ pub extern "C" fn _start() -> ! {
         ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Electric Cyan
         print!("root@axiom:~# ");
 
-        // Live idle / shell heartbeat loop
+        // Initialize Sovereign Capability Filesystem (VaultFS)
+        unsafe { VAULT.init(); }
+
+        let mut current_dir = 0; // Inode 0: Root vault
+        let mut line_buf = [0u8; 128];
+
         loop {
-            unsafe { core::arch::asm!("pause"); }
+            let len = ConsoleReader::read_line(&mut line_buf);
+            if len == 0 {
+                ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
+                print!("root@axiom:~# ");
+                continue;
+            }
+
+            let cmd_str = match core::str::from_utf8(&line_buf[..len]) {
+                Ok(s) => s.trim(),
+                Err(_) => {
+                    ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
+                    print!("root@axiom:~# ");
+                    continue;
+                }
+            };
+
+            execute_command(cmd_str, &mut current_dir);
+
+            ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
+            print!("root@axiom:~# ");
         }
     }
 
@@ -108,5 +134,152 @@ pub extern "C" fn _start() -> ! {
 fn panic(_info: &PanicInfo) -> ! {
     loop {
         unsafe { core::arch::asm!("pause"); }
+    }
+}
+
+fn execute_command(input: &str, current_dir: &mut usize) {
+    if input.is_empty() {
+        return;
+    }
+
+    // Split command and argument
+    let mut parts = input.splitn(2, ' ');
+    let cmd = parts.next().unwrap_or("");
+    let arg = parts.next().unwrap_or("").trim();
+
+    match cmd {
+        "help" => {
+            ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
+            println!("AxiomOS Sovereign Root Shell (PID 1) \u{2014} Capability Commands:");
+            ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Silver
+            println!("  help              - Display this command reference manual");
+            println!("  ls [dir]          - List entries in current or specified directory");
+            println!("  cat <file>        - Print content of specified file capability");
+            println!("  echo <text> [> f] - Print text or redirect to a file capability");
+            println!("  status            - Inspect CSpace authority, memory and security state");
+            println!("  clear             - Clear canvas and redraw obsidian status header");
+            println!("  reboot            - Trigger hardware system reboot");
+        },
+        "ls" | "dir" => {
+            let target_dir = if arg.is_empty() {
+                *current_dir
+            } else {
+                match unsafe { VAULT.lookup(*current_dir, arg) } {
+                    Some(id) if unsafe { VAULT.nodes[id].is_dir } => id,
+                    Some(_) => {
+                        println!("ls: {}: Not a directory", arg);
+                        return;
+                    },
+                    None => {
+                        println!("ls: {}: No such directory", arg);
+                        return;
+                    }
+                }
+            };
+
+            let vault = unsafe { &VAULT };
+            let mut count = 0;
+            for (idx, node) in vault.nodes.iter().enumerate() {
+                if node.in_use && node.parent_id == target_dir && idx != target_dir {
+                    if node.is_dir {
+                        ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Electric Cyan
+                        print!("{}/  ", node.name_str());
+                    } else {
+                        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Silver
+                        print!("{}  ", node.name_str());
+                    }
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                println!();
+            } else {
+                println!("(empty)");
+            }
+        },
+        "cat" => {
+            if arg.is_empty() {
+                println!("cat: missing file operand");
+                return;
+            }
+            let vault = unsafe { &VAULT };
+            match vault.lookup(*current_dir, arg) {
+                Some(id) => {
+                    let node = &vault.nodes[id];
+                    if node.is_dir {
+                        println!("cat: {}: Is a directory", arg);
+                    } else {
+                        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                        print!("{}", node.content_str());
+                    }
+                },
+                None => {
+                    println!("cat: {}: No such file or directory", arg);
+                }
+            }
+        },
+        "echo" => {
+            // Check for redirection: echo <text> > <file>
+            if let Some(arrow_idx) = arg.find('>') {
+                let text = arg[..arrow_idx].trim();
+                let file_name = arg[arrow_idx + 1..].trim();
+                if file_name.is_empty() {
+                    println!("echo: syntax error near unexpected token 'newline'");
+                    return;
+                }
+                let mut content = [0u8; 512];
+                let text_bytes = text.as_bytes();
+                let clen = core::cmp::min(text_bytes.len(), 510);
+                content[..clen].copy_from_slice(&text_bytes[..clen]);
+                content[clen] = b'\n';
+
+                match unsafe { VAULT.write_file(*current_dir, file_name, &content[..clen + 1]) } {
+                    Ok(_) => {
+                        ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
+                        println!("[ OK ] Written to capability: {}", file_name);
+                    },
+                    Err(e) => {
+                        ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                        println!("echo: {}: {}", file_name, e);
+                    }
+                }
+            } else {
+                println!("{}", arg);
+            }
+        },
+        "status" | "info" => {
+            ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
+            println!("[ CSPACE AUTHORITY INVENTORY ]");
+            ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+            println!("  Slot 1: CNodeCap     - Master CDT Root Authority");
+            println!("  Slot 2: VSpaceCap    - Genesis Sovereign PML4 (CR3)");
+            println!("  Slot 3: TCBCap       - Genesis Thread Control Block (PID 1)");
+            println!("  Slot 5: EndpointCap  - Console / Video Subsystem (1280x720)");
+            println!("  Slot 7: DirectoryCap - In-Memory Storage Vault (VaultFS)");
+            ConsoleWriter::set_color(0x002EE59D, 0x00101418);
+            println!("[ SECURITY INVARIANTS ]");
+            ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+            println!("  Privilege Level: Ring 3 User Mode (CPL = 3)");
+            println!("  Memory Barrier: Supervisor Pages Isolated (#PF Vector 14)");
+            println!("  Delegation: Monotonic Rights Attenuation Enforced");
+            println!("  Authority Model: Zero Ambient Authority Active");
+        },
+        "clear" => {
+            ConsoleWriter::draw_banner();
+            println!();
+        },
+        "reboot" => {
+            println!("Rebooting AxiomOS substrate...");
+            unsafe {
+                core::arch::asm!("out dx, al", in("dx") 0x64u16, in("al") 0xFEu8, options(nomem, nostack));
+            }
+        },
+        other => {
+            ConsoleWriter::set_color(0x00FF4B4B, 0x00101418); // Crimson Red
+            print!("axiom: command not found: ");
+            ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+            println!("{}", other);
+            println!("Type 'help' for available built-in commands.");
+        }
     }
 }

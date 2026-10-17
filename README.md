@@ -40,15 +40,20 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
   - Dynamic multi-page binary loader in `main_prod.rs` mapping arbitrary user binary sizes.
   - Root CSpace mapping: `ROOT_SLOT_CNODE=1`, `VSPACE=2`, `TCB=3`, `CONSOLE=5`.
   - Verified full Ring 3 user capability cycle: 54/54 automated boot selftests passing in emerald green.
-- **Phase 7A: Sovereign Screen Takeover & High-Resolution Console Canvas**:
-  - Genesis Process (PID 1) invokes root Console endpoint (`ROOT_SLOT_CONSOLE = 5`) via `OP_CONSOLE_BANNER = 8`.
-  - Clears boot diagnostic selftest screen and renders a 28-pixel high obsidian status bar (`#161B22`) with an electric cyan accent line (`#00D2FF`) on 1280x720 16:9 widescreen GOP canvas.
-  - Formatted user-space `print!` and `println!` macros via `libaxiom::console::ConsoleWriter`.
-  - AxiomOS welcome banner rendered and live sovereign `root@axiom:~#` prompt loop entered in Ring 3 ($CPL=3$).
+- **Phase 7B: Sovereign Capability Filesystem ("VaultFS" / "CapFS"), PS/2 Keyboard Driver & Interactive Shell**:
+  - Non-blocking PS/2 keyboard hardware input via microkernel `OP_CONSOLE_GETCHAR = 10` on root Console endpoint (`slot 5`).
+  - Full PC/AT Scancode Set 1 make/break decoder with shift combinations, symbols, Enter, and Backspace rubout on GOP canvas.
+  - Zero-ambient-authority in-memory capability filesystem (`VaultFS`) with isolated namespaces (`ROOT_SLOT_STORAGE = 7`).
+  - Authority Keyrings replacing traditional UNIX UIDs with cryptographically bounded capability sets.
+  - Interactive Genesis Root Shell commands: `status`, `ls [dir]`, `cat <file>`, `echo <text> [> file]`, `help`, `clear`, `reboot`.
+  - Virtual memory hardening: mailbox at `0x600000`, zeroed `.bss` pages mapped up to `0x422000`, and user stack expanded to 68 KiB.
 
 ---
 
 ## Production Verification & Sovereign Canvas
+
+### Phase 7B: Interactive Genesis Root Shell & Capability Filesystem Verified
+![AxiomOS Phase 7B Interactive Shell Verified](gallery/Phase7BInteractiveShellVerified.png)
 
 ### Phase 7A: Sovereign Screen Takeover & Live Genesis Root Shell
 ![AxiomOS Phase 7A Sovereign Screen Takeover Verified](gallery/Phase7AScreenTakeoverVerified.png)

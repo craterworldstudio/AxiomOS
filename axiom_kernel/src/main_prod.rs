@@ -582,16 +582,24 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     // Dynamically load all compiled Genesis binary pages into physical memory
     let bin_len = GENESIS_BIN.len();
     let num_pages = (bin_len + 4095) / 4096;
-    for page_idx in 0..num_pages {
+    let bss_extra_pages = 16; // 64 KiB headroom for .bss and user data
+    let total_pages = num_pages + bss_extra_pages;
+    for page_idx in 0..total_pages {
         let code_frame = bitmap_alloc.allocate_frame().unwrap();
         let frame_ptr = code_frame.start_address as *mut u8;
         let offset = page_idx * 4096;
-        let remaining = bin_len - offset;
-        let chunk = if remaining > 4096 { 4096 } else { remaining };
-        unsafe {
-            core::ptr::copy_nonoverlapping(GENESIS_BIN.as_ptr().add(offset), frame_ptr, chunk);
-            if chunk < 4096 {
-                core::ptr::write_bytes(frame_ptr.add(chunk), 0, 4096 - chunk);
+        if page_idx < num_pages {
+            let remaining = bin_len - offset;
+            let chunk = if remaining > 4096 { 4096 } else { remaining };
+            unsafe {
+                core::ptr::copy_nonoverlapping(GENESIS_BIN.as_ptr().add(offset), frame_ptr, chunk);
+                if chunk < 4096 {
+                    core::ptr::write_bytes(frame_ptr.add(chunk), 0, 4096 - chunk);
+                }
+            }
+        } else {
+            unsafe {
+                core::ptr::write_bytes(frame_ptr, 0, 4096);
             }
         }
         vspace.map_page(
@@ -607,13 +615,23 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write_bytes(genesis_data_frame.start_address as *mut u8, 0, 4096);
     }
 
-    // Map user virtual pages: Data at 0x408000, Stack at 0x800000
+    // Map user virtual pages: Data at 0x600000, Stack at 0x800000
     vspace.map_page(
-        0x408000,
+        0x600000,
         genesis_data_frame.start_address,
         memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
         &mut bitmap_alloc,
     ).unwrap();
+
+    for stack_page in 0..16 {
+        let ustack_frame = bitmap_alloc.allocate_frame().unwrap();
+        vspace.map_page(
+            0x7F0000 + (stack_page as u64) * 4096,
+            ustack_frame.start_address,
+            memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
+            &mut bitmap_alloc,
+        ).unwrap();
+    }
 
     vspace.map_page(
         0x800000,
@@ -621,7 +639,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         memory::PageFlags::PRESENT | memory::PageFlags::USER | memory::PageFlags::WRITABLE,
         &mut bitmap_alloc,
     ).unwrap();
-    ktest(b"Genesis Virtual Memory Mapped (0x400000 / 0x408000 / 0x800000)", true);
+    ktest(b"Genesis Virtual Memory Mapped (0x400000 / 0x600000 / 0x800000)", true);
 
     // Spawn Genesis Process bound to vspace and private genesis_cnode
     unsafe {

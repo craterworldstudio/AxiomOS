@@ -10,6 +10,7 @@ pub const OP_CONSOLE_WRITE: u64  = 6;
 pub const OP_CONSOLE_CLEAR: u64  = 7;
 pub const OP_CONSOLE_BANNER: u64 = 8;
 pub const OP_CONSOLE_COLOR: u64  = 9;
+pub const OP_CONSOLE_GETCHAR: u64 = 10;
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;
