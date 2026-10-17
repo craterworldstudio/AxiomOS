@@ -19,6 +19,8 @@ pub struct Console {
     pub bg_color: u32,
     pub is_graphics: bool,
     pub shift_pressed: bool,
+    pub ctrl_pressed: bool,
+    pub extended_prefix: bool,
 }
 
 pub static mut CONSOLE: Console = Console {
@@ -34,6 +36,8 @@ pub static mut CONSOLE: Console = Console {
     bg_color: 0x00101418, // Deep modern terminal dark slate
     is_graphics: false,
     shift_pressed: false,
+    ctrl_pressed: false,
+    extended_prefix: false,
 };
 
 impl Console {
@@ -257,7 +261,7 @@ impl Console {
         }
     }
 
-    /// Non-blocking read of an ASCII character from the PS/2 keyboard controller.
+    /// Non-blocking read of an ASCII character or special navigation key from PS/2 keyboard controller.
     /// Returns 0 if no keystroke is available.
     pub unsafe fn read_char(&mut self) -> u8 {
         // 1. Check if PS/2 status port 0x64 has output buffer full (bit 0)
@@ -271,28 +275,98 @@ impl Console {
         let scancode: u8;
         core::arch::asm!("in al, dx", in("dx") 0x60u16, out("al") scancode, options(nomem, nostack));
 
-        // 3. Track Shift key state (Set 1: Left Shift = 0x2A, Right Shift = 0x36)
-        if scancode == 0x2A || scancode == 0x36 {
-            self.shift_pressed = true;
-            return 0;
-        }
-        if scancode == 0xAA || scancode == 0xB6 {
-            self.shift_pressed = false;
+        // 3. Handle extended scancode prefix 0xE0
+        if scancode == 0xE0 {
+            self.extended_prefix = true;
             return 0;
         }
 
-        // Ignore break codes (bit 7 set)
+        let is_extended = self.extended_prefix;
+        self.extended_prefix = false;
+
+        // 4. Track Shift key state (Set 1: Left Shift = 0x2A, Right Shift = 0x36)
+        if !is_extended {
+            if scancode == 0x2A || scancode == 0x36 {
+                self.shift_pressed = true;
+                return 0;
+            }
+            if scancode == 0xAA || scancode == 0xB6 {
+                self.shift_pressed = false;
+                return 0;
+            }
+        }
+
+        // 5. Track Control key state (Left Ctrl = 0x1D / 0x9D, Right Ctrl = 0xE0 0x1D / 0xE0 0x9D)
+        if scancode == 0x1D {
+            self.ctrl_pressed = true;
+            return 0;
+        }
+        if scancode == 0x9D {
+            self.ctrl_pressed = false;
+            return 0;
+        }
+
+        // 6. Handle extended navigation keys (Arrow keys, Delete, Home, End)
+        if is_extended {
+            if (scancode & 0x80) != 0 {
+                return 0; // Ignore extended break codes
+            }
+            return match scancode {
+                0x48 => 128, // KEY_UP
+                0x50 => 129, // KEY_DOWN
+                0x4B => 130, // KEY_LEFT
+                0x4D => 131, // KEY_RIGHT
+                0x53 => 132, // KEY_DELETE
+                0x47 => 133, // KEY_HOME
+                0x4F => 134, // KEY_END
+                _ => 0,
+            };
+        }
+
+        // Ignore regular break codes (bit 7 set)
         if (scancode & 0x80) != 0 {
             return 0;
         }
 
-        // 4. Translate Scancode Set 1 make code to ASCII
-        translate_scancode(scancode, self.shift_pressed)
+        // 7. Translate Scancode Set 1 make code to ASCII with shift and ctrl modifiers
+        translate_scancode(scancode, self.shift_pressed, self.ctrl_pressed)
     }
 }
 
 /// Translates standard PC/AT Scancode Set 1 make codes to ASCII characters.
-fn translate_scancode(scancode: u8, shift: bool) -> u8 {
+fn translate_scancode(scancode: u8, shift: bool, ctrl: bool) -> u8 {
+    if ctrl {
+        return match scancode {
+            0x1E => 1,  // Ctrl+A
+            0x30 => 2,  // Ctrl+B
+            0x2E => 3,  // Ctrl+C
+            0x20 => 4,  // Ctrl+D
+            0x12 => 5,  // Ctrl+E
+            0x21 => 6,  // Ctrl+F
+            0x22 => 7,  // Ctrl+G
+            0x23 => 8,  // Ctrl+H (Backspace)
+            0x17 => 9,  // Ctrl+I (Tab)
+            0x24 => 10, // Ctrl+J (LF)
+            0x25 => 11, // Ctrl+K
+            0x26 => 12, // Ctrl+L
+            0x32 => 13, // Ctrl+M (CR)
+            0x31 => 14, // Ctrl+N
+            0x18 => 15, // Ctrl+O
+            0x19 => 16, // Ctrl+P
+            0x10 => 17, // Ctrl+Q
+            0x13 => 18, // Ctrl+R
+            0x1F => 19, // Ctrl+S
+            0x14 => 20, // Ctrl+T
+            0x16 => 21, // Ctrl+U
+            0x2F => 22, // Ctrl+V
+            0x11 => 23, // Ctrl+W
+            0x2D => 24, // Ctrl+X
+            0x15 => 25, // Ctrl+Y
+            0x2C => 26, // Ctrl+Z
+            _ => 0,
+        };
+    }
+
     match scancode {
         0x01 => 27, // ESC
         0x02 => if shift { b'!' } else { b'1' },

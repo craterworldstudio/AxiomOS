@@ -63,6 +63,20 @@ static mut MAP_CTX: CapMapContextWithData = CapMapContextWithData {
     count: 0,
 };
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapBlobContext {
+    pub data: [u8; 1024],
+    pub length: u32,
+    pub modified: u32,
+}
+
+static mut BLOB_CTX: CapBlobContext = CapBlobContext {
+    data: [0; 1024],
+    length: 0,
+    modified: 0,
+};
+
 #[no_mangle]
 #[link_section = ".text._start"]
 pub extern "C" fn _start() -> ! {
@@ -452,17 +466,20 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     let mut username_buf = [0u8; 32];
     username_buf[..4].copy_from_slice(b"root");
 
-    // If command is `cat`, resolve target file blob pointer directly
-    let storage_cap_val = if cmd == "cat" && !exec_args.is_empty() && exec_args != "-dh" {
-        if let Some(target_token) = graph.lookup(*current_map, exec_args) {
-            let target = &graph.nodes[target_token.target_id];
-            if target.kind == GraphObjectKind::Blob {
-                target.data_ptr as u64
-            } else {
-                0
+    // If command is `cat` or `axe`, resolve target file blob into BLOB_CTX
+    let storage_cap_val = if (cmd == "cat" || cmd == "axe") && !exec_args.is_empty() && exec_args != "-dh" {
+        unsafe {
+            BLOB_CTX.length = 0;
+            BLOB_CTX.modified = 0;
+            if let Some(target_token) = graph.lookup(*current_map, exec_args) {
+                let target = &graph.nodes[target_token.target_id];
+                if target.kind == GraphObjectKind::Blob && target.data_len > 0 {
+                    let clen = core::cmp::min(target.data_len, 1024);
+                    core::ptr::copy_nonoverlapping(target.data_ptr, BLOB_CTX.data.as_mut_ptr(), clen);
+                    BLOB_CTX.length = clen as u32;
+                }
             }
-        } else {
-            0
+            &raw mut BLOB_CTX as u64
         }
     } else {
         &raw const MAP_CTX as u64
@@ -507,4 +524,14 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         unsafe { core::mem::transmute(USER_EXEC_BASE as *const ()) };
 
     let _ret = entry(argc, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
+
+    // 9. If axe modified the buffer, flush writeback to CapGraph
+    if cmd == "axe" && !exec_args.is_empty() && exec_args != "-dh" {
+        unsafe {
+            if BLOB_CTX.modified != 0 {
+                let len = core::cmp::min(BLOB_CTX.length as usize, 1024);
+                let _ = graph.write_file(*current_map, exec_args, &BLOB_CTX.data[..len]);
+            }
+        }
+    }
 }

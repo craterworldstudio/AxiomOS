@@ -31,6 +31,13 @@ char* strcpy(char* dest, const char* src) {
     return dest;
 }
 
+char* strcat(char* dest, const char* src) {
+    char* d = dest;
+    while (*d) d++;
+    while ((*d++ = *src++));
+    return dest;
+}
+
 char* strncpy(char* dest, const char* src, size_t n) {
     size_t i;
     for (i = 0; i < n && src[i] != '\0'; i++)
@@ -48,9 +55,8 @@ const char* strchr(const char* s, int c) {
     return (c == 0) ? s : NULL;
 }
 
-void axiom_print(const char* str) {
-    if (!str) return;
-    size_t len = strlen(str);
+void axiom_print_len(const char* str, size_t len) {
+    if (!str || len == 0) return;
     size_t i = 0;
     while (i < len) {
         size_t chunk_len = len - i;
@@ -62,6 +68,11 @@ void axiom_print(const char* str) {
         axiom_syscall(ROOT_SLOT_CONSOLE, OP_CONSOLE_WRITE, chunk, chunk_len);
         i += chunk_len;
     }
+}
+
+void axiom_print(const char* str) {
+    if (!str) return;
+    axiom_print_len(str, strlen(str));
 }
 
 void axiom_println(const char* str) {
@@ -77,7 +88,7 @@ void axiom_set_color(uint32_t fg, uint32_t bg) {
 
 int axiom_getchar(void) {
     uint64_t res = axiom_syscall(ROOT_SLOT_CONSOLE, OP_CONSOLE_GETCHAR, 0, 0);
-    if (res != 0 && res < 128) {
+    if (res != 0 && res <= 255) {
         return (int)res;
     }
     return -1;

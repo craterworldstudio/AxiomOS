@@ -118,11 +118,19 @@ pub struct CapGraph {
 
 pub static mut GRAPH: CapGraph = CapGraph::new();
 
-// Static system configuration strings
-const OS_RELEASE: &[u8] = b"NAME=\"AxiomOS Sovereign Core Substrate\"\nVERSION=\"0.2.0-alpha\"\nARCH=\"x86_64\"\nSECURITY=\"Object Capability Graph (CapGraph)\"\nAUTHORITY=\"Zero Ambient Authority (CPL=3)\"\n";
-const MOTD: &[u8] = b"Welcome to AxiomOS.\nAll storage is modeled as an Object-Oriented Structural Graph.\nCommands are standalone C/ASM binaries in /bin.\n";
-const README: &[u8] = b"Sovereign Root Workspace\n- bin/   : Standalone executable capability binaries (C/ASM)\n- etc/   : System capability ledger and configuration\n- home/  : User capsules\n- caps/  : Device endpoints (Console)\n";
-const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\n";
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapBlobContext {
+    pub data: [u8; 1024],
+    pub length: u32,
+    pub modified: u32,
+}
+
+// Static system configuration strings (explicitly null-terminated for C boundary safety)
+const OS_RELEASE: &[u8] = b"NAME=\"AxiomOS Sovereign Core Substrate\"\nVERSION=\"0.2.0-alpha\"\nARCH=\"x86_64\"\nSECURITY=\"Object Capability Graph (CapGraph)\"\nAUTHORITY=\"Zero Ambient Authority (CPL=3)\"\n\0";
+const MOTD: &[u8] = b"Welcome to AxiomOS.\nAll storage is modeled as an Object-Oriented Structural Graph.\nCommands are standalone C/ASM binaries in /bin.\n\0";
+const README: &[u8] = b"Sovereign Root Workspace\n- bin/   : Standalone executable capability binaries (C/ASM)\n- etc/   : System capability ledger and configuration\n- home/  : User capsules\n- caps/  : Device endpoints (Console)\n\0";
+const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\n\0";
 
 impl CapGraph {
     pub const fn new() -> Self {

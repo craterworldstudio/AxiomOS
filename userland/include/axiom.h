@@ -66,6 +66,25 @@ typedef struct {
     uint32_t     count;
 } CapMapContext;
 
+// Capability Blob Context for file content and editor writeback
+typedef struct {
+    char     data[1024];
+    uint32_t length;
+    uint32_t modified;
+} CapBlobContext;
+
+// Special navigation and control key definitions
+#define KEY_UP     128
+#define KEY_DOWN   129
+#define KEY_LEFT   130
+#define KEY_RIGHT  131
+#define KEY_DELETE 132
+#define KEY_HOME   133
+#define KEY_END    134
+#define KEY_CTRL_C 3
+#define KEY_CTRL_Q 17
+#define KEY_CTRL_S 19
+
 // Hardware fast-path syscall gateway
 static inline uint64_t axiom_syscall(uint64_t handle, uint64_t op, uint64_t arg1, uint64_t arg2) {
     uint64_t ret;
@@ -81,6 +100,7 @@ static inline uint64_t axiom_syscall(uint64_t handle, uint64_t op, uint64_t arg1
 
 // Userland API
 void     axiom_print(const char* str);
+void     axiom_print_len(const char* str, size_t len);
 void     axiom_println(const char* str);
 void     axiom_set_color(uint32_t fg, uint32_t bg);
 int      axiom_getchar(void);
@@ -93,6 +113,7 @@ int      strcmp(const char* s1, const char* s2);
 int      strncmp(const char* s1, const char* s2, size_t n);
 char*    strcpy(char* dest, const char* src);
 char*    strncpy(char* dest, const char* src, size_t n);
+char*    strcat(char* dest, const char* src);
 const char* strchr(const char* s, int c);
 
 #endif
