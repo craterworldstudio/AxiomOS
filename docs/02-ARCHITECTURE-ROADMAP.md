@@ -64,16 +64,41 @@ We are utilizing a **Laboratory-First Strategy**:
 - [x] 16-byte System V stack alignment and user segment selector restoration.
 - [x] Stress suite: 50x syscalls under timer IRQ, 25+ preemption ticks, thread lifecycle/reuse, stack canaries.
 
-### Phase 5: Capability System Call ABI (Next)
-*Status: Upcoming*
-- [ ] Hardware `syscall`/`sysret` MSR initialization (`STAR`, `LSTAR`, `SFMASK`).
-- [ ] Fast-path capability invocation protocol.
-- [ ] Capability Derivation Tree (CDT) and recursive revocation.
-- [ ] Microkernel boundary freeze.
+### Phase 5: Hardware Fast-Path Syscall Gateway, CDT & Microkernel Freeze
+*Status: Completed*
+- [x] Hardware `syscall`/`sysretq` MSR programming (`IA32_EFER`, `STAR`, `LSTAR`, `SFMASK`, `KERNEL_GS_BASE`).
+- [x] Atomic kernel stack isolation via `swapgs` and per-CPU `CpuLocal` state.
+- [x] Full Capability Derivation Tree (CDT) with rights monotonicity enforcement ($R_{\text{child}} \subseteq R_{\text{parent}}$).
+- [x] Recursive transitive revocation (`OP_REVOKE`) and slot deletion (`OP_DELETE`).
+- [x] Synchronous atomic RPC rendezvous (`OP_CALL`) with direct timeslice donation (`enqueue_front`).
+- [x] Microkernel security hardening: Spectre v1 speculation barrier (`lfence`), SYSRET non-canonical check (CVE-2012-0217 mitigation), user segment reload (`0x1B`), scratch register zero-leak wipe.
+- [x] High-resolution 1280x720 16:9 widescreen GOP graphics integration.
+- [x] Microkernel boundary formally frozen: Ring 0 locked; all subsequent OS services run in Ring 3.
 
-### Phase 6+: User-Space OS & Toolchain Execution
-*Status: Planned*
-- **Phase 6**: Root Task (`Init`), Embedded Ramdisk, & ELF64 Loader.
-- **Phase 7**: Microkernel Services (GOP Terminal Server, PS/2 Keyboard, Storage/VFS).
-- **Phase 8**: Authentication & Cryptographic Login Subsystem.
-- **Phase 9**: The Sovereign Shell (AxSH), C/musl runtime, and Native C/ASM compilation.
+### Phase 6: The Genesis Process (PID 1) & `libaxiom` Capability Runtime
+*Status: Completed*
+- [x] De-scoped legacy `axiom_core` to `archive/axiom_core`.
+- [x] Engineered `libaxiom`: sovereign user-space capability runtime crate (typed caps, syscall gateway, BumpAllocator, sync IPC).
+- [x] Built `axiom_genesis`: Ring 3 root user task independently linked at virtual address `0x400000`.
+- [x] Multi-page dynamic ELF binary loader in `main_prod.rs` mapping arbitrary user binary sizes.
+- [x] Genesis Root CSpace configured: `ROOT_SLOT_CNODE=1`, `VSPACE=2`, `TCB=3`, `CONSOLE=5`.
+- [x] Verified full Ring 3 user capability cycle: 54/54 automated boot selftests passing in emerald green.
+
+### Phase 7: Sovereign User-Space OS & Capability Subsystems
+*Status: In Progress*
+- **Phase 7A: Sovereign Screen Takeover & High-Resolution Console Canvas** *(Completed)*
+  - [x] Framebuffer capability operation (`OP_CONSOLE_BANNER = 8`) on Slot 5.
+  - [x] 1280x28 obsidian status bar (`#161B22`) with electric cyan accent line (`#00D2FF`) on 1280x720 16:9 canvas.
+  - [x] User-space capability-backed print pipeline (`libaxiom::console::ConsoleWriter`).
+  - [x] Clean screen takeover clearing boot selftest logs and presenting sovereign `root@axiom:~#` prompt.
+- **Phase 7B: Sovereign Capability Filesystem ("VaultFS" / "CapFS"), PS/2 Keyboard Driver & Interactive Shell** *(Current Milestone)*
+  - [ ] PS/2 Keyboard interrupt driver: IRQ 1 routed to capability endpoint for non-blocking stdin keystrokes.
+  - [ ] Capability Filesystem ("VaultFS"): Zero global ambient root `/`, directories and files as object capability endpoints.
+  - [ ] Per-process sovereign namespaces: processes only see directories delegated to them in CSpace.
+  - [ ] User accounts as Authority Keyrings: cryptographic capability capsules instead of flat `UID 0` god-mode.
+  - [ ] In-memory RamFS (`libaxiom/fs`) with standard operations (`LOOKUP`, `READ`, `WRITE`, `CREATE`, `LIST`).
+  - [ ] Interactive Genesis root shell commands (`help`, `ls`, `cat`, `echo`, `clear`, `status`, `reboot`).
+- **Phase 7C: Dynamic Program Spawner & Block Storage Driver** *(Planned)*
+  - [ ] Untyped memory retyping from Ring 3 to spawn child worker processes.
+  - [ ] AHCI / NVMe / FAT32 persistent storage driver mounted via capability endpoint.
+  - [ ] Simple C / shell script command runner.

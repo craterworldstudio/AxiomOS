@@ -33,12 +33,28 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
   - Synchronous atomic RPC rendezvous primitive (`OP_CALL`) with direct timeslice handover (`enqueue_front`).
   - Security hardening: Spectre v1 speculation barrier (`lfence`), SYSRET non-canonical address validation (CVE-2012-0217 mitigation), user data segment reload (`0x1B`), and complete scratch register sanitization (`RDI`, `RSI`, `RDX`, `R8`, `R9`, `R10`).
   - Formal microkernel boundary freeze: Ring 0 code locked; all subsequent OS services (shell, memory allocators, compilers, login) run in Ring 3.
+- **Phase 6: The Genesis Process (PID 1) & `libaxiom` Capability Runtime**:
+  - Legacy `axiom_core` decoupled and archived to `archive/axiom_core`.
+  - Created `libaxiom`: pure `#![no_std]` user-space capability runtime crate providing strongly typed capability wrappers (`EndpointCap`, `CNodeCap`, `UntypedCap`), hardware `syscall` gateway, synchronous IPC (`call`, `send`, `recv`), lock-free user `BumpAllocator`, and capability-backed console printing.
+  - Created `axiom_genesis`: Ring 3 root user task independently compiled and linked at virtual address `0x400000`.
+  - Dynamic multi-page binary loader in `main_prod.rs` mapping arbitrary user binary sizes.
+  - Root CSpace mapping: `ROOT_SLOT_CNODE=1`, `VSPACE=2`, `TCB=3`, `CONSOLE=5`.
+  - Verified full Ring 3 user capability cycle: 54/54 automated boot selftests passing in emerald green.
+- **Phase 7A: Sovereign Screen Takeover & High-Resolution Console Canvas**:
+  - Genesis Process (PID 1) invokes root Console endpoint (`ROOT_SLOT_CONSOLE = 5`) via `OP_CONSOLE_BANNER = 8`.
+  - Clears boot diagnostic selftest screen and renders a 28-pixel high obsidian status bar (`#161B22`) with an electric cyan accent line (`#00D2FF`) on 1280x720 16:9 widescreen GOP canvas.
+  - Formatted user-space `print!` and `println!` macros via `libaxiom::console::ConsoleWriter`.
+  - AxiomOS welcome banner rendered and live sovereign `root@axiom:~#` prompt loop entered in Ring 3 ($CPL=3$).
 
 ---
 
-## Production Verification
+## Production Verification & Sovereign Canvas
 
-![AxiomOS Phase 5 Full Capability ABI Verified](gallery/Phase5FullCapabilityABIVerified.png)
+### Phase 7A: Sovereign Screen Takeover & Live Genesis Root Shell
+![AxiomOS Phase 7A Sovereign Screen Takeover Verified](gallery/Phase7AScreenTakeoverVerified.png)
+
+### Phase 6: Genesis Process (PID 1) Verified (54/54 Boot Selftests Passed)
+![AxiomOS Phase 6 Genesis Process Verified](gallery/Phase6GenesisProcessVerified.png)
 
 ---
 
@@ -58,7 +74,7 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
 # Development Mode (High-Res GOP terminal, live threads)
 ./build.sh
 
-# Production Mode (Comprehensive self-test suite & preemption stress)
+# Production Mode (Comprehensive 54-test suite, preemption stress & screen takeover)
 ./build.sh -prod
 
 # Legacy BIOS Mode (MBR Stage 1 & Stage 2 fallback)
@@ -69,7 +85,11 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
 
 ## Documentation
 - [Architecture Roadmap](docs/02-ARCHITECTURE-ROADMAP.md)
+- [Sovereign Capability Filesystem ("VaultFS" / "CapFS") Architecture](docs/07-CAPABILITY-FILESYSTEM.md)
 - [ADR Index](docs/05-ADRs/)
   - [ADR-0007: Preemption Architecture, LAPIC Timer, and Bounded Ring-0 Deferral](docs/05-ADRs/ADR-007.md)
   - [ADR-0008: Hardware Fast-Path Syscall Gateway, Capability Derivation Tree (CDT), Atomic RPC, and Kernel Boundary Freeze](docs/05-ADRs/ADR-008.md)
+  - [ADR-0009: The Genesis Process (PID 1) & User-Space Capability Runtime (libaxiom)](docs/05-ADRs/ADR-009.md)
+  - [ADR-0010: Sovereign Screen Takeover, Object-Capability Console Subsystem, and Text-Based GUI Canvas](docs/05-ADRs/ADR-010.md)
+  - [ADR-0011: Sovereign Capability Filesystem ("VaultFS"), Authority Keyrings, and Interactive Shell Architecture](docs/05-ADRs/ADR-011.md)
 - [Capability Lifecycle Model](docs/06-CAPABILITY-LIFECYCLE.md)
