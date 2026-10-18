@@ -577,6 +577,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         kind: object::ObjectKind::Endpoint,
         rights: capability::Rights::ALL,
     });
+    // Storage Endpoint (Slot 7): ATA PIO persistent storage capability
+    let (storage_ep_ref, _) = capability::retype(&mut untyped1, object::ObjectKind::Endpoint, object_table, cnode).unwrap();
+    genesis_cnode.slots[7].insert(capability::Capability {
+        object: storage_ep_ref,
+        kind: object::ObjectKind::Endpoint,
+        rights: capability::Rights::ALL,
+    });
     ktest(b"Genesis Root Capabilities Configured", true);
 
     // Dynamically load all compiled Genesis binary pages into physical memory

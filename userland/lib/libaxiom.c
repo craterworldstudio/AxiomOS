@@ -101,3 +101,17 @@ void axiom_clear(void) {
 void axiom_draw_banner(void) {
     axiom_syscall(ROOT_SLOT_CONSOLE, OP_CONSOLE_BANNER, 0, 0);
 }
+
+void axiom_set_cursor(uint32_t row, uint32_t col) {
+    axiom_syscall(ROOT_SLOT_CONSOLE, OP_CONSOLE_SET_CURSOR, row, col);
+}
+
+int axiom_storage_read(uint32_t lba, void* buf) {
+    uint64_t res = axiom_syscall(ROOT_SLOT_STORAGE, OP_STORAGE_READ, (uint64_t)lba, (uint64_t)buf);
+    return (res == 0) ? 0 : -1;
+}
+
+int axiom_storage_write(uint32_t lba, const void* buf) {
+    uint64_t res = axiom_syscall(ROOT_SLOT_STORAGE, OP_STORAGE_WRITE, (uint64_t)lba, (uint64_t)buf);
+    return (res == 0) ? 0 : -1;
+}

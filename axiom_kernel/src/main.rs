@@ -21,6 +21,7 @@ mod scheduler;
 mod console;
 mod apic;
 mod syscall;
+mod ata;
 
 #[inline(always)]
 pub unsafe fn serial_out(b: u8) {

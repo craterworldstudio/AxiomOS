@@ -11,6 +11,9 @@ pub const OP_CONSOLE_CLEAR: u64  = 7;
 pub const OP_CONSOLE_BANNER: u64 = 8;
 pub const OP_CONSOLE_COLOR: u64  = 9;
 pub const OP_CONSOLE_GETCHAR: u64 = 10;
+pub const OP_CONSOLE_SET_CURSOR: u64 = 11;
+pub const OP_STORAGE_READ: u64   = 20;
+pub const OP_STORAGE_WRITE: u64  = 21;
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;
@@ -438,6 +441,36 @@ pub extern "C" fn sys_invoke_handler(
                     let console = unsafe { &raw mut crate::console::CONSOLE };
                     let ch = unsafe { (*console).read_char() };
                     ch as u64
+                },
+                OP_CONSOLE_SET_CURSOR => {
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let console = unsafe { &raw mut crate::console::CONSOLE };
+                    unsafe { (*console).set_cursor(arg1 as usize, arg2 as usize); }
+                    SYSCALL_OK
+                },
+                OP_STORAGE_READ => {
+                    if !cap.rights.contains(Rights::READ) { return ERR_INVALID_RIGHTS; }
+                    let drive = if (arg1 >> 32) != 0 { ((arg1 >> 32) & 1) as u8 } else { 1u8 };
+                    let lba = (arg1 & 0xFFFFFFFF) as u32;
+                    let buf = arg2 as *mut u8;
+                    unsafe {
+                        match crate::ata::read_sector(drive, lba, buf) {
+                            Ok(()) => SYSCALL_OK,
+                            Err(_) => 0xFFFFFFFFFFFFFFFF,
+                        }
+                    }
+                },
+                OP_STORAGE_WRITE => {
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let drive = if (arg1 >> 32) != 0 { ((arg1 >> 32) & 1) as u8 } else { 1u8 };
+                    let lba = (arg1 & 0xFFFFFFFF) as u32;
+                    let buf = arg2 as *const u8;
+                    unsafe {
+                        match crate::ata::write_sector(drive, lba, buf) {
+                            Ok(()) => SYSCALL_OK,
+                            Err(_) => 0xFFFFFFFFFFFFFFFF,
+                        }
+                    }
                 },
                 _ => ERR_UNSUPPORTED_OP,
             }

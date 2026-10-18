@@ -113,6 +113,16 @@ pub extern "C" fn _start() -> ! {
         cwd[0] = b'/';
         let mut cwd_len: usize = 1;
 
+        // Default initial domain: vaults/root
+        if let Some(vr) = unsafe { GRAPH.lookup(0, "vaults/root") } {
+            if unsafe { GRAPH.nodes[vr.target_id].kind == GraphObjectKind::DirectoryMap } {
+                current_map = vr.target_id;
+                let vr_bytes = b"vaults/root";
+                cwd[..vr_bytes.len()].copy_from_slice(vr_bytes);
+                cwd_len = vr_bytes.len();
+            }
+        }
+
         let mut line_buf = [0u8; 128];
 
         loop {
@@ -120,7 +130,7 @@ pub extern "C" fn _start() -> ! {
             if let Ok(p) = core::str::from_utf8(&cwd[..cwd_len]) {
                 print!("root@axiom:{}# ", p);
             } else {
-                print!("root@axiom:/# ");
+                print!("root@axiom:vaults/root# ");
             }
 
             let len = ConsoleReader::read_line(&mut line_buf);
@@ -212,12 +222,17 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             println!("  reboot               - Trigger hardware system reboot");
             println!();
             ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Cyan
-            println!("Available Executables (/bin):");
+            println!("  pwd                  - Print current directory path");
+            println!("  clear                - Clear console canvas");
+            println!("  reboot               - Trigger hardware system reboot");
+            println!();
+            ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Cyan
+            println!("Available Executables (/apps/sys):");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
 
-            // Dynamically execute all binaries registered in /bin with -dh
+            // Dynamically execute all binaries registered in /apps/sys with -dh
             let graph = unsafe { &mut GRAPH };
-            if let Some(bin_token) = graph.lookup(0, "bin") {
+            if let Some(bin_token) = graph.lookup(0, "apps/sys") {
                 let bin_node = &graph.nodes[bin_token.target_id];
                 if bin_node.kind == GraphObjectKind::DirectoryMap {
                     for link in bin_node.entries.iter() {
@@ -267,18 +282,29 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             println!("  Slot 2: VSpaceCap    - Genesis Sovereign PML4 (CR3)");
             println!("  Slot 3: TCBCap       - Genesis Thread Control Block (PID 1)");
             println!("  Slot 5: EndpointCap  - Console / Video Subsystem (1280x720)");
-            println!("  Slot 7: DirectoryCap - Object-Oriented Structural Graph (CapGraph)");
+            println!("  Slot 7: EndpointCap  - Persistent Storage Drive (ATA PIO / edps/drives/ata0)");
             ConsoleWriter::set_color(0x002EE59D, 0x00101418);
             println!("[ SECURITY INVARIANTS ]");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
             println!("  Filesystem: Object-Oriented Structural Graph (Zero Ambient Root)");
             println!("  Privilege Level: Ring 3 User Mode (CPL = 3)");
-            println!("  Ledger Security: Attenuated Least-Privilege Execution");
+            println!("  Ledger Security: Attenuated Least-Privilege Execution (/meta/caps.ledger)");
             println!("  Execution Buffer: 0x500000 (C / ASM Standalone Binaries)");
             return;
         },
         "cd" => {
-            if arg_str.is_empty() || arg_str == "~" || arg_str == "/" {
+            if arg_str.is_empty() || arg_str == "~" {
+                if let Some(vr) = unsafe { GRAPH.lookup(0, "vaults/root") } {
+                    *current_map = vr.target_id;
+                    let vrb = b"vaults/root";
+                    cwd[..vrb.len()].copy_from_slice(vrb);
+                    *cwd_len = vrb.len();
+                } else {
+                    *current_map = 0;
+                    cwd[0] = b'/';
+                    *cwd_len = 1;
+                }
+            } else if arg_str == "/" {
                 *current_map = 0;
                 cwd[0] = b'/';
                 *cwd_len = 1;
@@ -400,31 +426,37 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     }
 
     // Try looking up:
-    // 1. bin/<cmd>.bin
-    // 2. bin/<cmd>
+    // 1. apps/sys/<cmd>.bin
+    // 2. apps/sys/<cmd>
     // 3. <current_map>/<cmd>
     // 4. <current_map>/<cmd>.bin
+    // 5. 0/<cmd> (path lookup)
     let mut target_token = None;
 
     {
         let mut bin_path: [u8; 64] = [0; 64];
-        bin_path[..4].copy_from_slice(b"bin/");
+        let pfx = b"apps/sys/";
+        bin_path[..pfx.len()].copy_from_slice(pfx);
         let cmd_bytes = cmd.as_bytes();
         let clen = core::cmp::min(cmd_bytes.len(), 45);
-        bin_path[4..4 + clen].copy_from_slice(&cmd_bytes[..clen]);
-        bin_path[4 + clen..4 + clen + 4].copy_from_slice(b".bin");
-        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..4 + clen + 4]) {
+        bin_path[pfx.len()..pfx.len() + clen].copy_from_slice(&cmd_bytes[..clen]);
+        let ext = b".bin";
+        bin_path[pfx.len() + clen..pfx.len() + clen + ext.len()].copy_from_slice(ext);
+        let total = pfx.len() + clen + ext.len();
+        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..total]) {
             target_token = graph.lookup(0, bp_str);
         }
     }
 
     if target_token.is_none() {
         let mut bin_path: [u8; 64] = [0; 64];
-        bin_path[..4].copy_from_slice(b"bin/");
+        let pfx = b"apps/sys/";
+        bin_path[..pfx.len()].copy_from_slice(pfx);
         let cmd_bytes = cmd.as_bytes();
         let clen = core::cmp::min(cmd_bytes.len(), 50);
-        bin_path[4..4 + clen].copy_from_slice(&cmd_bytes[..clen]);
-        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..4 + clen]) {
+        bin_path[pfx.len()..pfx.len() + clen].copy_from_slice(&cmd_bytes[..clen]);
+        let total = pfx.len() + clen;
+        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..total]) {
             target_token = graph.lookup(0, bp_str);
         }
     }
@@ -442,6 +474,10 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         if let Ok(bp_str) = core::str::from_utf8(&bin_path[..clen + 4]) {
             target_token = graph.lookup(*current_map, bp_str);
         }
+    }
+
+    if target_token.is_none() && cmd.contains('/') {
+        target_token = graph.lookup(0, cmd.trim_matches('/'));
     }
 
     let token = match target_token {

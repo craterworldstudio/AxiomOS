@@ -10,6 +10,29 @@ pub const MAX_MAP_ENTRIES: usize = 16;
 pub const MAX_NAME_LEN: usize = 32;
 pub const MAX_DYNAMIC_DATA: usize = 1024;
 
+use crate::syscall::{invoke_short, OP_STORAGE_READ, OP_STORAGE_WRITE};
+use crate::ROOT_SLOT_STORAGE;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DiskFileEntry {
+    pub name: [u8; 32],
+    pub parent_map: u32,
+    pub data_len: u32,
+    pub start_lba: u32,
+    pub sector_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DiskSuperblock {
+    pub magic: u64, // 0x4158494F4D5F4653 ("AXIOM_FS")
+    pub entry_count: u32,
+    pub _pad: u32,
+    pub entries: [DiskFileEntry; 8],
+    pub _reserved: [u8; 112],
+}
+
 // Embedded C and Assembly Binaries compiled from userland/
 pub const ECHO_BIN: &[u8]   = include_bytes!("../../target/userland_bin/echo.bin");
 pub const LS_BIN: &[u8]     = include_bytes!("../../target/userland_bin/ls.bin");
@@ -128,8 +151,8 @@ pub struct CapBlobContext {
 
 // Static system configuration strings (explicitly null-terminated for C boundary safety)
 const OS_RELEASE: &[u8] = b"NAME=\"AxiomOS Sovereign Core Substrate\"\nVERSION=\"0.2.0-alpha\"\nARCH=\"x86_64\"\nSECURITY=\"Object Capability Graph (CapGraph)\"\nAUTHORITY=\"Zero Ambient Authority (CPL=3)\"\n\0";
-const MOTD: &[u8] = b"Welcome to AxiomOS.\nAll storage is modeled as an Object-Oriented Structural Graph.\nCommands are standalone C/ASM binaries in /bin.\n\0";
-const README: &[u8] = b"Sovereign Root Workspace\n- bin/   : Standalone executable capability binaries (C/ASM)\n- etc/   : System capability ledger and configuration\n- home/  : User capsules\n- caps/  : Device endpoints (Console)\n\0";
+const MOTD: &[u8] = b"Welcome to AxiomOS.\nAll storage is modeled as an Object-Oriented Structural Graph.\nCommands are standalone C/ASM binaries in /apps/sys.\n\0";
+const README: &[u8] = b"Sovereign Root Workspace\n- apps/sys/  : Standalone executable capability binaries (C/ASM)\n- apps/pkg/  : User and installed capability packages\n- meta/      : System capability ledger and configuration\n- vaults/    : User data vaults (VaultFS)\n- edps/      : Device capability endpoints (console, drives/ata0)\n- srvs/      : Ring 3 system server IPC channels\n\0";
 const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\n\0";
 
 impl CapGraph {
@@ -148,35 +171,169 @@ impl CapGraph {
         self.nodes[0].kind = GraphObjectKind::DirectoryMap;
         self.nodes[0].in_use = true;
 
-        // Node 1: bin/ Directory Map
-        let bin_id = self.add_map(0, "bin", RIGHTS_READ | RIGHTS_EXEC);
-        // Node 2: etc/ Directory Map
-        let etc_id = self.add_map(0, "etc", RIGHTS_READ);
-        // Node 3: home/ Directory Map
-        let home_id = self.add_map(0, "home", RIGHTS_ALL);
-        // Node 4: caps/ Directory Map (Device endpoints)
-        let caps_id = self.add_map(0, "caps", RIGHTS_READ);
+        // Sovereign Namespace
+        // 1. apps/ Directory Map
+        let apps_id = self.add_map(0, "apps", RIGHTS_READ | RIGHTS_EXEC);
+        let apps_sys_id = self.add_map(apps_id, "sys", RIGHTS_READ | RIGHTS_EXEC);
+        let _apps_pkg_id = self.add_map(apps_id, "pkg", RIGHTS_ALL);
 
-        // Add executables to bin/ Map (pointing directly to C/ASM binaries)
-        self.add_static_blob(bin_id, "echo.bin", ECHO_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "ls.bin", LS_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "cat.bin", CAT_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "whoami.bin", WHOAMI_BIN, RIGHTS_EXEC | RIGHTS_READ);
-        self.add_static_blob(bin_id, "axe.bin", AXE_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        // 2. meta/ Directory Map
+        let meta_id = self.add_map(0, "meta", RIGHTS_READ);
 
-        // Add config files to etc/ Map
-        self.add_static_blob(etc_id, "caps.ledger", CAPS_LEDGER, RIGHTS_READ);
-        self.add_static_blob(etc_id, "os-release", OS_RELEASE, RIGHTS_READ);
-        self.add_static_blob(etc_id, "motd", MOTD, RIGHTS_READ);
+        // 3. vaults/ Directory Map
+        let vaults_id = self.add_map(0, "vaults", RIGHTS_ALL);
+        let root_vault_id = self.add_map(vaults_id, "root", RIGHTS_ALL);
 
-        // Add home/root Map
-        let root_home_id = self.add_map(home_id, "root", RIGHTS_ALL);
-        self.add_static_blob(root_home_id, "readme.txt", README, RIGHTS_ALL);
+        // 4. edps/ Directory Map (Capability Endpoints)
+        let edps_id = self.add_map(0, "edps", RIGHTS_READ);
+        let edps_drives_id = self.add_map(edps_id, "drives", RIGHTS_READ);
 
-        // Add device endpoint to caps/ Map
-        self.add_endpoint(caps_id, "console", 5, RIGHTS_WRITE | RIGHTS_READ);
+        // 5. srvs/ Directory Map (Ring 3 Server Channels)
+        let _srvs_id = self.add_map(0, "srvs", RIGHTS_READ | RIGHTS_WRITE);
+
+        // Add executables to apps/sys/ Map
+        self.add_static_blob(apps_sys_id, "echo.bin", ECHO_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "ls.bin", LS_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "cat.bin", CAT_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "whoami.bin", WHOAMI_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "axe.bin", AXE_BIN, RIGHTS_EXEC | RIGHTS_READ);
+
+        // Add config files to meta/ Map
+        self.add_static_blob(meta_id, "caps.ledger", CAPS_LEDGER, RIGHTS_READ);
+        self.add_static_blob(meta_id, "os-release", OS_RELEASE, RIGHTS_READ);
+        self.add_static_blob(meta_id, "motd", MOTD, RIGHTS_READ);
+
+        // Add vaults/root data files
+        self.add_static_blob(root_vault_id, "readme.txt", README, RIGHTS_ALL);
+
+        // Add capability endpoints
+        self.add_endpoint(edps_id, "console", 5, RIGHTS_WRITE | RIGHTS_READ);
+        self.add_endpoint(edps_drives_id, "ata0", 7, RIGHTS_WRITE | RIGHTS_READ);
 
         self.initialized = true;
+
+        // Mount persistent disk nodes if present
+        self.mount_disk();
+    }
+
+    /// Mounts dynamic files from persistent ATA disk
+    pub fn mount_disk(&mut self) {
+        let mut sb = DiskSuperblock {
+            magic: 0,
+            entry_count: 0,
+            _pad: 0,
+            entries: [DiskFileEntry {
+                name: [0; 32],
+                parent_map: 0,
+                data_len: 0,
+                start_lba: 0,
+                sector_count: 0,
+            }; 8],
+            _reserved: [0; 112],
+        };
+        let sb_ptr = &mut sb as *mut DiskSuperblock as *mut u8;
+        let storage_handle = ((1u64) << 32) | (ROOT_SLOT_STORAGE as u64);
+        let ret = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, 0, sb_ptr as u64) };
+        if ret != 0 {
+            return;
+        }
+
+        if sb.magic == 0x4158494F4D5F4653 {
+            let count = core::cmp::min(sb.entry_count as usize, 8);
+            for i in 0..count {
+                let ent = &sb.entries[i];
+                if ent.data_len == 0 { continue; }
+                let mut data_buf = [0u8; 1024];
+                let sec1_ptr = data_buf.as_mut_ptr();
+                let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, ent.start_lba as u64, sec1_ptr as u64) };
+                if ent.sector_count > 1 {
+                    let sec2_ptr = unsafe { sec1_ptr.add(512) };
+                    let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, (ent.start_lba + 1) as u64, sec2_ptr as u64) };
+                }
+
+                let dlen = core::cmp::min(ent.data_len as usize, 1024);
+                let name_len = ent.name.iter().position(|&c| c == 0).unwrap_or(32);
+                if let Ok(name_str) = core::str::from_utf8(&ent.name[..name_len]) {
+                    let target_map = if ent.parent_map < (MAX_NODES as u32) && self.nodes[ent.parent_map as usize].in_use {
+                        ent.parent_map as usize
+                    } else if let Some(vr) = self.lookup(0, "vaults/root") {
+                        vr.target_id
+                    } else {
+                        0
+                    };
+                    let _ = self.write_file_no_sync(target_map, name_str, &data_buf[..dlen]);
+                }
+            }
+        } else {
+            // First time boot on clean disk: write blank superblock
+            sb.magic = 0x4158494F4D5F4653;
+            sb.entry_count = 0;
+            let sb_write_ptr = &sb as *const DiskSuperblock as *const u8;
+            let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, 0, sb_write_ptr as u64) };
+        }
+    }
+
+    /// Flushes all dynamic files to persistent ATA disk
+    pub fn sync_disk(&mut self) -> Result<(), &'static str> {
+        let storage_handle = ((1u64) << 32) | (ROOT_SLOT_STORAGE as u64);
+        let mut sb = DiskSuperblock {
+            magic: 0x4158494F4D5F4653,
+            entry_count: 0,
+            _pad: 0,
+            entries: [DiskFileEntry {
+                name: [0; 32],
+                parent_map: 0,
+                data_len: 0,
+                start_lba: 0,
+                sector_count: 0,
+            }; 8],
+            _reserved: [0; 112],
+        };
+
+        let mut file_idx = 0;
+        for node_id in 0..MAX_NODES {
+            if self.nodes[node_id].in_use && self.nodes[node_id].kind == GraphObjectKind::DirectoryMap {
+                for link in self.nodes[node_id].entries.iter() {
+                    if link.in_use && file_idx < 8 {
+                        let target = &self.nodes[link.token.target_id];
+                        if target.in_use && target.kind == GraphObjectKind::Blob && target.is_dynamic {
+                            let start_lba = 1 + (file_idx as u32) * 2;
+                            let sec_count = if target.data_len > 512 { 2 } else { 1 };
+
+                            let mut sbuf = [0u8; 512];
+                            let c1 = core::cmp::min(target.data_len, 512);
+                            sbuf[..c1].copy_from_slice(&target.dynamic_buf[..c1]);
+                            let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, start_lba as u64, sbuf.as_ptr() as u64) };
+
+                            if sec_count > 1 {
+                                let mut sbuf2 = [0u8; 512];
+                                let c2 = target.data_len - 512;
+                                sbuf2[..c2].copy_from_slice(&target.dynamic_buf[512..512 + c2]);
+                                let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, (start_lba + 1) as u64, sbuf2.as_ptr() as u64) };
+                            }
+
+                            let ent = &mut sb.entries[file_idx];
+                            ent.name[..link.name_len].copy_from_slice(&link.name[..link.name_len]);
+                            ent.parent_map = node_id as u32;
+                            ent.data_len = target.data_len as u32;
+                            ent.start_lba = start_lba;
+                            ent.sector_count = sec_count;
+
+                            file_idx += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        sb.entry_count = file_idx as u32;
+        let sb_ptr = &sb as *const DiskSuperblock as *const u8;
+        let ret = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, 0, sb_ptr as u64) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err("Disk write failed")
+        }
     }
 
     /// Allocates an empty node in the graph
@@ -306,8 +463,17 @@ impl CapGraph {
         Some(CapToken { target_id: current_map, rights: RIGHTS_ALL })
     }
 
-    /// Writes data to a file in the capability graph, creating intermediate directory maps if needed
+    /// Writes or creates a file in the graph and automatically persists to disk
     pub fn write_file(&mut self, start_map_id: usize, path: &str, content: &[u8]) -> Result<usize, &'static str> {
+        let res = self.write_file_no_sync(start_map_id, path, content);
+        if res.is_ok() {
+            let _ = self.sync_disk();
+        }
+        res
+    }
+
+    /// Internal write without disk flush (used by mount_disk to avoid re-sync recursion)
+    pub fn write_file_no_sync(&mut self, start_map_id: usize, path: &str, content: &[u8]) -> Result<usize, &'static str> {
         let trimmed = path.trim_matches('/');
         if trimmed.is_empty() { return Err("Empty path"); }
 
@@ -392,7 +558,7 @@ impl CapGraph {
         Ok(new_id)
     }
 
-    /// Looks up capability rights in /etc/caps.ledger
+    /// Looks up capability rights in /meta/caps.ledger
     pub fn get_ledger_rights(&self, bin_name: &str) -> Option<&'static str> {
         let name_only = if let Some(idx) = bin_name.rfind('/') {
             &bin_name[idx + 1..]
@@ -410,7 +576,7 @@ impl CapGraph {
         }
     }
 
-    /// Appends a new package entry to /etc/caps.ledger without needing Genesis root authority
+    /// Appends a new package entry to /meta/caps.ledger without needing Genesis root authority
     pub fn append_ledger_entry(&mut self, bin_name: &str, rights: &str, caller_rights: u8) -> Result<(), &'static str> {
         // Enforce Monotonicity Invariant: cannot grant rights greater than caller holds
         if (caller_rights & RIGHTS_WRITE) == 0 {
@@ -422,8 +588,8 @@ impl CapGraph {
             return Err("Package already registered in ledger");
         }
 
-        // Append to dynamic buffer of etc/caps.ledger node
-        if let Some(token) = self.lookup(0, "etc/caps.ledger") {
+        // Append to dynamic buffer of meta/caps.ledger node
+        if let Some(token) = self.lookup(0, "meta/caps.ledger") {
             let node = &mut self.nodes[token.target_id];
             let mut pos = node.data_len;
             let b1 = bin_name.as_bytes();
@@ -445,6 +611,7 @@ impl CapGraph {
                 node.dynamic_buf[pos..pos + b3.len()].copy_from_slice(b3); pos += b3.len();
                 node.dynamic_buf[pos] = b'\n'; pos += 1;
                 node.data_len = pos;
+                let _ = self.sync_disk();
                 return Ok(());
             }
         }

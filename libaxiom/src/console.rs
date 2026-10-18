@@ -34,6 +34,14 @@ impl ConsoleWriter {
         }
     }
 
+    /// Sets write cursor position (row, col) in-place without clearing screen.
+    pub fn set_cursor(row: usize, col: usize) {
+        let ep = EndpointCap::from_handle(CapHandle::new(ROOT_SLOT_CONSOLE as u32, 1));
+        unsafe {
+            let _ = invoke_short(ep.0.0, OP_CONSOLE_SET_CURSOR, row as u64, col as u64);
+        }
+    }
+
     /// Writes raw string characters to the console in 8-byte packed syscall chunks.
     pub fn write_str(s: &str) {
         let ep = EndpointCap::from_handle(CapHandle::new(ROOT_SLOT_CONSOLE as u32, 1));

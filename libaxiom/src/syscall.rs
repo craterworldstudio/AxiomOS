@@ -11,6 +11,9 @@ pub const OP_CONSOLE_CLEAR: u64  = 7;
 pub const OP_CONSOLE_BANNER: u64 = 8;
 pub const OP_CONSOLE_COLOR: u64  = 9;
 pub const OP_CONSOLE_GETCHAR: u64 = 10;
+pub const OP_CONSOLE_SET_CURSOR: u64 = 11;
+pub const OP_STORAGE_READ: u64   = 20;
+pub const OP_STORAGE_WRITE: u64  = 21;
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;

@@ -1,0 +1,154 @@
+================================================================================
+AXIOM OS - PHASE 8 ARCHITECTURE & IMPLEMENTATION SPECIFICATION
+Sovereign Namespace, Axe Flicker-Free In-Place Refresh, 
+Visual Cursor, Shift-Selection/Clipboard, & ATA PIO Persistent Storage
+================================================================================
+
+1. OVERVIEW & OBJECTIVES
+--------------------------------------------------------------------------------
+This specification establishes the roadmap for AxiomOS Phase 8:
+  A. Sovereign Namespace: Replacing legacy Unix-like paths (/bin, /etc, /home)
+     with Axiom's capability topology: apps/sys/, meta/, vaults/, edps/drives/, srvs/.
+  B. Flicker-Free axe Editor: Eliminating full-screen blanking by implementing
+     in-place line overwriting via a new microkernel cursor syscall (OP_CONSOLE_SET_CURSOR).
+  C. High-Contrast Visual Cursor: Real-time rendering of an inverted Electric Cyan
+     cursor block with live row/col status coordinates.
+  D. Shift-Arrow Selection & Clipboard: Implementing Shift+Arrow selection engine,
+     highlighted in Obsidian Sapphire, with Ctrl+A (Select All), Ctrl+C (Copy),
+     and Ctrl+V (Paste).
+  E. Hardware Persistent Storage: FREESTANDING ATA PIO storage driver wired to
+     ROOT_SLOT_STORAGE (Slot 7), synchronizing dynamic CapGraph filesystem nodes
+     to a secondary 16MB raw disk image (target/axiom_data.img) that survives reboot.
+
+
+2. SOVEREIGN CAPABILITY NAMESPACE TOPOLOGY
+--------------------------------------------------------------------------------
+The directory structure abandons legacy POSIX conventions in favor of capability-
+centric sovereign domains:
+
+/
+|-- apps/
+|   |-- sys/             <- Core binaries recognized directly by the shell:
+|   |                       whoami.bin, axe.bin, ls.bin, cat.bin, echo.bin
+|   `-- pkg/             <- Dynamic or user-installed capability packages
+|-- meta/                <- System metadata, security ledger, and system state:
+|   |-- caps.ledger      <- Capability rights registry and access rules
+|   |-- os-release       <- AxiomOS sovereign edition details
+|   `-- motd             <- Message of the Day
+|-- vaults/              <- Isolated user capability data vaults:
+|   `-- root/            <- Root capability domain (default cwd: vaults/root/)
+|       `-- readme.txt   <- Initial documentation & user notes
+|-- edps/                <- Capability Endpoints (hardware & communication interfaces):
+|   |-- console          <- Framebuffer & input console endpoint
+|   `-- drives/          <- Storage drive capability endpoints:
+|       `-- ata0         <- Primary master ATA PIO storage drive
+`-- srvs/                <- Ring 3 system server IPC channels:
+    |-- auth             <- Authentication and session server endpoint
+    `-- vfs              <- Vault File System server endpoint
+
+
+3. IN-PLACE FLICKER-FREE AXE EDITOR ARCHITECTURE
+--------------------------------------------------------------------------------
+Problem:
+  axe currently calls axiom_draw_banner() on every keypress, which blanks 921,600
+  32-bit pixels (3.6 MB of video memory) to black before redrawing text. This
+  causes visible screen strobing/flickering.
+
+Solution:
+  - Banner is rendered ONCE on editor startup and ONCE on exit.
+  - Ring 0 microkernel exposes OP_CONSOLE_SET_CURSOR (OP 11) on console endpoint.
+  - axiom_set_cursor(row, col) moves the write cursor directly.
+  - On keypress:
+      1. axiom_set_cursor(1, 0) -> update top status header.
+      2. For each line i (from 0 to total_lines):
+         axiom_set_cursor(2 + i, 0) -> overwrite line text directly.
+         Lines are padded with trailing spaces to instantly erase deletions
+         without needing a clear-screen operation.
+  - Cursor cell is highlighted in inverted Electric Cyan:
+      fg = 0x00101418 (Obsidian Black), bg = 0x0000D2FF (Electric Cyan).
+
+
+4. TEXT SELECTION & CLIPBOARD SPECIFICATION
+--------------------------------------------------------------------------------
+Modifiers & Keycodes:
+  - PS/2 driver in axiom_kernel/src/console.rs tracks Shift and Ctrl state.
+  - Shift + Left/Right/Up/Down produces extended keycodes:
+      KEY_SHIFT_UP    = 135
+      KEY_SHIFT_DOWN  = 136
+      KEY_SHIFT_LEFT  = 137
+      KEY_SHIFT_RIGHT = 138
+  - Control shortcuts:
+      Ctrl+A = 1   (Select All)
+      Ctrl+C = 3   (Copy Selection to Internal Clipboard)
+      Ctrl+V = 22  (Paste Internal Clipboard at Cursor)
+      Ctrl+S = 19  (Save Document)
+      Ctrl+Q = 17  (Quit Editor)
+
+Visual Highlight:
+  Selected characters are rendered with background Obsidian Sapphire:
+      bg = 0x00005F87, fg = 0x00FFFFFF.
+  Clipboard buffer: 1024-byte static internal buffer.
+
+
+5. HARDWARE PERSISTENT STORAGE (ATA PIO & CAPGRAPH SYNC)
+--------------------------------------------------------------------------------
+Architecture:
+  - Pure freestanding ATA PIO driver implemented in axiom_kernel/src/ata.rs.
+  - Direct hardware port I/O on Primary IDE bus:
+      0x1F0: Data Register (16-bit)
+      0x1F1: Error / Features
+      0x1F2: Sector Count
+      0x1F3: LBA Low (0:7)
+      0x1F4: LBA Mid (8:15)
+      0x1F5: LBA High (16:23)
+      0x1F6: Device / Drive select (0xE0 | LBA 24:27)
+      0x1F7: Status / Command (0x20 = Read, 0x30 = Write)
+  - Syscall Interface on ROOT_SLOT_STORAGE (Slot 7):
+      OP_STORAGE_READ  = 20
+      OP_STORAGE_WRITE = 21
+  - Disk Layout (target/axiom_data.img - 16MB raw disk):
+      Sector 0:       Superblock (Magic: 0x4158494F4D5F4653 "AXIOM_FS", NodeCount)
+      Sectors 1..64:  Dynamic CapGraph node table (names, types, parent IDs, offsets)
+      Sectors 65+:    File payload data blocks (512-byte sectors)
+  - Lifecycle:
+      Boot:   libaxiom CapGraph initializes and checks Sector 0 for magic signature.
+              If present, mounts persistent dynamic nodes into the graph.
+      Modify: When axe or echo writes to a file, dynamic nodes are marked dirty.
+      Sync:   Flushes modified sectors through Slot 7 to ATA disk.
+              Survives full system reboots and power cycles.
+
+
+6. STEP-BY-STEP IMPLEMENTATION CHECKLIST
+--------------------------------------------------------------------------------
+[ ] Milestone A: Sovereign Namespace Migration
+    - Update libaxiom/src/fs.rs CapGraph::init() to mount apps/sys, apps/pkg,
+      meta, vaults/root, edps/console, edps/drives/ata0, srvs.
+    - Update axiom_genesis/src/main.rs command lookup to resolve apps/sys/<cmd>.
+    - Update dynamic help loop to scan apps/sys/.
+    - Set default shell prompt and cwd to root@axiom:vaults/root#.
+
+[ ] Milestone B: In-Place Refresh & High-Contrast Cursor
+    - Add set_cursor(row, col) to axiom_kernel/src/console.rs.
+    - Add OP_CONSOLE_SET_CURSOR (11) to axiom_kernel/src/capability.rs.
+    - Add axiom_set_cursor(row, col) to userland libaxiom and axiom.h.
+    - Refactor axe.c: draw banner once, redraw lines in-place, pad with spaces.
+    - Render inverted Electric Cyan cursor cell.
+
+[ ] Milestone C: Shift-Selection & Clipboard Engine
+    - Enhance console.rs PS/2 decoder with Shift+Arrow extended codes.
+    - Implement selection anchors and bounds checking in axe.c.
+    - Render selected text in Obsidian Sapphire (0x00005F87).
+    - Implement Ctrl+A, Ctrl+C (copy to 1KB buffer), Ctrl+V (paste).
+
+[ ] Milestone D: Hardware Persistent Storage (ATA PIO)
+    - Implement freestanding ATA PIO driver in axiom_kernel/src/ata.rs.
+    - Wire ROOT_SLOT_STORAGE (Slot 7) with OP_STORAGE_READ / OP_STORAGE_WRITE.
+    - Implement CapGraph serialization and disk sync in libaxiom/src/fs.rs.
+    - Create target/axiom_data.img (16MB) in build.sh and attach as secondary IDE disk.
+
+[ ] Milestone E: Verification & Gallery Artifacts
+    - test_sovereign_tree.py: verify full tree, dynamic help, path resolution.
+    - test_axe_flicker_free.py: test in-place editing, Shift-selection, clipboard.
+    - test_reboot_persistence.py: test data retention across full hardware reboot.
+    - Capture high-resolution PNG screendumps to gallery/.
+================================================================================

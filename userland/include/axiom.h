@@ -31,6 +31,9 @@ typedef unsigned long  size_t;
 #define OP_CONSOLE_BANNER  8
 #define OP_CONSOLE_COLOR   9
 #define OP_CONSOLE_GETCHAR 10
+#define OP_CONSOLE_SET_CURSOR 11
+#define OP_STORAGE_READ    20
+#define OP_STORAGE_WRITE   21
 
 // Capability Rights Bitmask
 #define RIGHTS_NONE  0b0000
@@ -74,16 +77,23 @@ typedef struct {
 } CapBlobContext;
 
 // Special navigation and control key definitions
-#define KEY_UP     128
-#define KEY_DOWN   129
-#define KEY_LEFT   130
-#define KEY_RIGHT  131
-#define KEY_DELETE 132
-#define KEY_HOME   133
-#define KEY_END    134
-#define KEY_CTRL_C 3
-#define KEY_CTRL_Q 17
-#define KEY_CTRL_S 19
+#define KEY_UP          128
+#define KEY_DOWN        129
+#define KEY_LEFT        130
+#define KEY_RIGHT       131
+#define KEY_DELETE      132
+#define KEY_HOME        133
+#define KEY_END         134
+#define KEY_SHIFT_UP    135
+#define KEY_SHIFT_DOWN  136
+#define KEY_SHIFT_LEFT  137
+#define KEY_SHIFT_RIGHT 138
+
+#define KEY_CTRL_A      1
+#define KEY_CTRL_C      3
+#define KEY_CTRL_Q      17
+#define KEY_CTRL_S      19
+#define KEY_CTRL_V      22
 
 // Hardware fast-path syscall gateway
 static inline uint64_t axiom_syscall(uint64_t handle, uint64_t op, uint64_t arg1, uint64_t arg2) {
@@ -103,9 +113,12 @@ void     axiom_print(const char* str);
 void     axiom_print_len(const char* str, size_t len);
 void     axiom_println(const char* str);
 void     axiom_set_color(uint32_t fg, uint32_t bg);
+void     axiom_set_cursor(uint32_t row, uint32_t col);
 int      axiom_getchar(void);
 void     axiom_clear(void);
 void     axiom_draw_banner(void);
+int      axiom_storage_read(uint32_t lba, void* buf);
+int      axiom_storage_write(uint32_t lba, const void* buf);
 
 // Standard string helpers
 size_t   strlen(const char* s);

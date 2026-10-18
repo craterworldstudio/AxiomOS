@@ -91,6 +91,15 @@ impl Console {
         self.bg_color = bg;
     }
 
+    pub unsafe fn set_cursor(&mut self, row: usize, col: usize) {
+        if row < self.max_rows {
+            self.row = row;
+        }
+        if col < self.max_cols {
+            self.col = col;
+        }
+    }
+
     pub unsafe fn write_char(&mut self, c: u8) {
         if c == 0x08 { // Backspace (rubout)
             if self.col > 0 {
@@ -310,6 +319,15 @@ impl Console {
         if is_extended {
             if (scancode & 0x80) != 0 {
                 return 0; // Ignore extended break codes
+            }
+            if self.shift_pressed {
+                return match scancode {
+                    0x48 => 135, // KEY_SHIFT_UP
+                    0x50 => 136, // KEY_SHIFT_DOWN
+                    0x4B => 137, // KEY_SHIFT_LEFT
+                    0x4D => 138, // KEY_SHIFT_RIGHT
+                    _ => 0,
+                };
             }
             return match scancode {
                 0x48 => 128, // KEY_UP

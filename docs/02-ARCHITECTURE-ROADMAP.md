@@ -107,7 +107,38 @@ We are utilizing a **Laboratory-First Strategy**:
   - [x] Shell Capability Ledger (`/etc/caps.ledger`) with fine-grained per-command attenuation and non-root append-only token protocol.
   - [x] `curr <command>` ledger bypass mechanism running binaries directly with caller's active authority keyring.
   - [x] Virtual memory hardening: expanded BSS to 64 pages (256 KiB) and mapped 16 physical execution frames at `0x500000`.
-- **Phase 7D: Dynamic Task Retyping, Block Storage Driver & IPC Multiplexing** *(Planned)*
-  - [ ] Untyped memory retyping from Ring 3 to spawn separate child worker processes and VSpaces.
-  - [ ] AHCI / NVMe / FAT32 persistent storage driver mounted via capability endpoint.
-  - [ ] IPC channel multiplexer for inter-process service orchestration.
+- **Phase 7D: Isolated CapBlob Data Isolation, Extended Keyboard Decoder & Axe Loading** *(Completed)*
+  - [x] Memory isolation fix: Exact `CapBlobContext` length tracking and null-terminated string buffers, eliminating cross-file memory bleed.
+  - [x] PS/2 extended scancode decoding in Ring 0 microkernel (`ctrl_pressed`, cursor arrow keys).
+  - [x] `axe` text editor: Existing file loading from CapGraph and multi-line file editing.
+
+### Phase 8: Sovereign Namespace, Flicker-Free Axe Editor, Clipboard & Hardware ATA Persistent Storage
+*Status: In Progress*
+- [x] Architectural Specification & Invariant Plan locked.
+- [ ] Sovereign Capability Namespace migration: `/apps/sys/` (system executables), `/apps/pkg/` (packages), `/meta/` (ledger, identity, motd), `/vaults/` (user data domains), `/edps/` (hardware endpoints: console, drives), `/srvs/` (IPC server channels).
+- [ ] In-place flicker-free `axe` rendering via microkernel `OP_CONSOLE_SET_CURSOR` (OP 11), overwriting rows directly with zero screen clearing.
+- [ ] High-contrast visual cursor rendering in inverted Electric Cyan (`fg = 0x00101418`, `bg = 0x0000D2FF`).
+- [ ] Text selection engine with Shift+Arrow navigation (highlighted in Obsidian Sapphire `0x00005F87`) and internal clipboard buffer (`Ctrl+A`, `Ctrl+C`, `Ctrl+V`).
+- [ ] Freestanding ATA PIO hard disk storage driver (`0x1F0..0x1F7`) wired to `ROOT_SLOT_STORAGE` (`Slot 7`), serializing dynamic CapGraph filesystem nodes across reboot on `target/axiom_data.img`.
+
+### Phase 9: Ring 3 Multi-Process Lifecycle & Task Spawner
+*Status: Planned*
+- [ ] Genesis (PID 1) decoupling: Genesis serves purely as the Master Init and Process Orchestrator.
+- [ ] Capability-based `fork`/`spawn`: Retyping Untyped memory into child TCBs, VSpaces, and CNodes from userland.
+- [ ] Userland Shell Process (PID 2): Running independent interactive terminal sessions without root kernel authority.
+- [ ] Synchronous IPC rendezvous multiplexer routing requests between client processes and server daemons.
+
+### Phase 10: Accounts, Authentication & Cryptographic Keyrings
+*Status: Planned*
+- [ ] Authentication Service (`srvs/auth`): Ring 3 credential validator managing encrypted identity keys.
+- [ ] Sovereign Login Prompt: Secure interactive authentication before granting access to personal capability vaults.
+- [ ] Multi-tenant isolation: Distinct user vaults (`/vaults/alice`, `/vaults/bob`) isolated by cryptographic CSpace delegations.
+- [ ] Non-repudiation logging: Authentication and delegation audits written to `/meta/audit.ledger`.
+
+### Phase 11: Universal Driver Framework & High-Resolution GUI Desktop
+*Status: Planned*
+- [ ] Universal Driver Framework: Hardware devices managed as isolated Ring 3 services communicating over `/edps/` endpoints with strict I/O port permissions.
+- [ ] Mouse driver integration: PS/2 and USB HID packet decoder tracking high-precision 2D cursor coordinates.
+- [ ] Window Server & Compositor (`srvs/wm`): Obsidian-themed window manager with dirty-rectangle hardware-accelerated double buffering.
+- [ ] Axiom Graphical Desktop: Tiled and floating windows, graphical file explorer for `/vaults/`, and rich visual system monitor.
+
