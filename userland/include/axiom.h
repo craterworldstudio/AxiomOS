@@ -34,6 +34,9 @@ typedef unsigned long  size_t;
 #define OP_CONSOLE_SET_CURSOR 11
 #define OP_STORAGE_READ    20
 #define OP_STORAGE_WRITE   21
+#define OP_SYS_REBOOT      30
+#define OP_SYS_SHUTDOWN    31
+#define OP_KERNEL_PANIC    99
 
 // Capability Rights Bitmask
 #define RIGHTS_NONE  0b0000

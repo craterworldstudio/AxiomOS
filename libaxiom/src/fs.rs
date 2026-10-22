@@ -554,7 +554,7 @@ impl CapGraph {
         target.data_len = clen;
         target.is_dynamic = true;
 
-        self.link_to_map(cur_map, leaf_name, CapToken { target_id: new_id, rights: RIGHTS_ALL });
+        self.link_to_map(cur_map, leaf_name, CapToken { target_id: new_id, rights: RIGHTS_READ | RIGHTS_WRITE });
         Ok(new_id)
     }
 

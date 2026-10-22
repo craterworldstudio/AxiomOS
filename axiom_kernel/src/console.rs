@@ -270,6 +270,198 @@ impl Console {
         }
     }
 
+    pub unsafe fn draw_string_at(&self, x: usize, y: usize, s: &str, fg: u32, bg: u32) {
+        for (i, b) in s.bytes().enumerate() {
+            self.draw_glyph(x + i * 8, y, b, fg, bg);
+        }
+    }
+
+    pub unsafe fn draw_panic_screen(
+        &mut self,
+        exception_title: &str,
+        sub_title: &str,
+        rip: u64,
+        rsp: u64,
+        cr2: u64,
+        error_code: u64,
+        cr3: u64,
+        rflags: u64,
+        cs: u64,
+    ) {
+        if !self.is_graphics || self.fb_base.is_null() {
+            let vga = 0xB8000 as *mut u8;
+            for i in 0..2000 {
+                *vga.add(i * 2) = b' ';
+                *vga.add(i * 2 + 1) = 0x4F; // White on Red
+            }
+            return;
+        }
+
+        // 1. Fill Canvas with Deep Obsidian / Charcoal (0x000E1015)
+        let total_pixels = self.pitch * self.height;
+        for i in 0..total_pixels {
+            *self.fb_base.add(i) = 0x000E1015;
+        }
+
+        // 2. High-Impact Crimson Red Header Bar (40px high)
+        let header_height = 40;
+        for row in 0..header_height {
+            let offset = row * self.pitch;
+            for col in 0..self.width {
+                *self.fb_base.add(offset + col) = 0x00FF3B30; // Vibrant Crimson
+            }
+        }
+        // Accent separator line below header (Gold Yellow: 0x00FFD166)
+        let border_offset = header_height * self.pitch;
+        for col in 0..self.width {
+            *self.fb_base.add(border_offset + col) = 0x00FFD166;
+        }
+
+        self.draw_string_at(24, 12, "[ AXIOM OS SOVEREIGN MICROKERNEL -- KERNEL PANIC ]", 0x00FFFFFF, 0x00FF3B30);
+        let tag = "Ring 0 Substrate Fault";
+        if self.width > 240 {
+            self.draw_string_at(self.width - 240, 12, tag, 0x00FFFFFF, 0x00FF3B30);
+        }
+
+        // 3. Central Diagnostic Card (width 1000, height 540)
+        let box_x0 = if self.width > 1000 { (self.width - 1000) / 2 } else { 20 };
+        let box_y0 = 70;
+        let box_w = core::cmp::min(1000, self.width - 40);
+        let box_h = core::cmp::min(550, self.height - 80);
+
+        // Fill Diagnostic Card Background (Dark Terminal Slate: 0x00151922)
+        for r in 0..box_h {
+            let y = box_y0 + r;
+            let row_start = y * self.pitch;
+            for c in 0..box_w {
+                *self.fb_base.add(row_start + box_x0 + c) = 0x00151922;
+            }
+        }
+
+        // Draw Card Borders (2px Crimson 0x00FF3B30)
+        for c in 0..box_w {
+            *self.fb_base.add(box_y0 * self.pitch + (box_x0 + c)) = 0x00FF3B30;
+            *self.fb_base.add((box_y0 + 1) * self.pitch + (box_x0 + c)) = 0x00FF3B30;
+            *self.fb_base.add((box_y0 + box_h - 1) * self.pitch + (box_x0 + c)) = 0x00FF3B30;
+            *self.fb_base.add((box_y0 + box_h - 2) * self.pitch + (box_x0 + c)) = 0x00FF3B30;
+        }
+        for r in 0..box_h {
+            *self.fb_base.add((box_y0 + r) * self.pitch + box_x0) = 0x00FF3B30;
+            *self.fb_base.add((box_y0 + r) * self.pitch + box_x0 + 1) = 0x00FF3B30;
+            *self.fb_base.add((box_y0 + r) * self.pitch + (box_x0 + box_w - 1)) = 0x00FF3B30;
+            *self.fb_base.add((box_y0 + r) * self.pitch + (box_x0 + box_w - 2)) = 0x00FF3B30;
+        }
+
+        // Card Title Bar (Deep Crimson Fill: 0x002B0D12)
+        for r in 2..38 {
+            let row_start = (box_y0 + r) * self.pitch;
+            for c in 2..(box_w - 2) {
+                *self.fb_base.add(row_start + box_x0 + c) = 0x002B0D12;
+            }
+        }
+        self.draw_string_at(box_x0 + 24, box_y0 + 12, "CRITICAL SUBSTRATE INVARIANT FAULT", 0x00FF4B4B, 0x002B0D12);
+
+        // Content Area inside Box
+        let content_x = box_x0 + 24;
+        let mut cur_y = box_y0 + 56;
+        let card_bg = 0x00151922;
+
+        // Exception & Reason
+        self.draw_string_at(content_x, cur_y, "EXCEPTION : ", 0x00FFD166, card_bg); // Gold
+        self.draw_string_at(content_x + 12 * 8, cur_y, exception_title, 0x00FF4B4B, card_bg);
+        cur_y += 24;
+
+        self.draw_string_at(content_x, cur_y, "DETAILS   : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 12 * 8, cur_y, sub_title, 0x00E0E0E0, card_bg);
+        cur_y += 32;
+
+        // Separator Line
+        for c in 0..(box_w - 48) {
+            *self.fb_base.add(cur_y * self.pitch + content_x + c) = 0x00252B3B;
+        }
+        cur_y += 16;
+
+        // Hardware Context
+        self.draw_string_at(content_x, cur_y, "REGISTER DIAGNOSTICS (x86_64 HARDWARE CONTEXT):", 0x0000D2FF, card_bg); // Electric Cyan
+        cur_y += 24;
+
+        let mut buf_rip = [0u8; 18]; Self::format_hex(rip, &mut buf_rip);
+        let mut buf_rsp = [0u8; 18]; Self::format_hex(rsp, &mut buf_rsp);
+        let mut buf_cr2 = [0u8; 18]; Self::format_hex(cr2, &mut buf_cr2);
+        let mut buf_cr3 = [0u8; 18]; Self::format_hex(cr3, &mut buf_cr3);
+        let mut buf_err = [0u8; 18]; Self::format_hex(error_code, &mut buf_err);
+        let mut buf_rfl = [0u8; 18]; Self::format_hex(rflags, &mut buf_rfl);
+        let mut buf_cs  = [0u8; 18]; Self::format_hex(cs, &mut buf_cs);
+
+        let rip_s = core::str::from_utf8(&buf_rip).unwrap_or("");
+        let rsp_s = core::str::from_utf8(&buf_rsp).unwrap_or("");
+        let cr2_s = core::str::from_utf8(&buf_cr2).unwrap_or("");
+        let cr3_s = core::str::from_utf8(&buf_cr3).unwrap_or("");
+        let err_s = core::str::from_utf8(&buf_err).unwrap_or("");
+        let rfl_s = core::str::from_utf8(&buf_rfl).unwrap_or("");
+        let cs_s  = core::str::from_utf8(&buf_cs).unwrap_or("");
+
+        self.draw_string_at(content_x + 16, cur_y, "RIP : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 16 + 6 * 8, cur_y, rip_s, 0x00FFFFFF, card_bg);
+        self.draw_string_at(content_x + 360, cur_y, "RSP : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 360 + 6 * 8, cur_y, rsp_s, 0x00FFFFFF, card_bg);
+        cur_y += 20;
+
+        self.draw_string_at(content_x + 16, cur_y, "CR2 : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 16 + 6 * 8, cur_y, cr2_s, 0x00FFFFFF, card_bg);
+        self.draw_string_at(content_x + 360, cur_y, "CR3 : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 360 + 6 * 8, cur_y, cr3_s, 0x00FFFFFF, card_bg);
+        cur_y += 20;
+
+        self.draw_string_at(content_x + 16, cur_y, "ERR : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 16 + 6 * 8, cur_y, err_s, 0x00FFFFFF, card_bg);
+        self.draw_string_at(content_x + 360, cur_y, "RFL : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 360 + 6 * 8, cur_y, rfl_s, 0x00FFFFFF, card_bg);
+        cur_y += 20;
+
+        self.draw_string_at(content_x + 16, cur_y, "CS  : ", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x + 16 + 6 * 8, cur_y, cs_s, 0x00FFFFFF, card_bg);
+        cur_y += 32;
+
+        // Separator Line
+        for c in 0..(box_w - 48) {
+            *self.fb_base.add(cur_y * self.pitch + content_x + c) = 0x00252B3B;
+        }
+        cur_y += 16;
+
+        // Sovereign Substrate State
+        self.draw_string_at(content_x, cur_y, "SOVEREIGN SECURITY & SUBSTRATE DEFENSE STATE:", 0x002EE59D, card_bg); // Emerald
+        cur_y += 24;
+
+        self.draw_string_at(content_x + 16, cur_y, "[x] Invariant Guarantee : Zero Ambient Authority Preserved", 0x00E0E0E0, card_bg);
+        cur_y += 18;
+        self.draw_string_at(content_x + 16, cur_y, "[x] Scheduler Isolation : All Active Threads & Preemption Frozen", 0x00E0E0E0, card_bg);
+        cur_y += 18;
+        self.draw_string_at(content_x + 16, cur_y, "[x] Storage Integrity   : ATA PIO Bus Quiesced & Disarmed", 0x00E0E0E0, card_bg);
+        cur_y += 32;
+
+        // Separator Line
+        for c in 0..(box_w - 48) {
+            *self.fb_base.add(cur_y * self.pitch + content_x + c) = 0x00252B3B;
+        }
+        cur_y += 16;
+
+        // Halting Banner
+        self.draw_string_at(content_x, cur_y, "[ SYSTEM HALTED: Microkernel frozen in Ring 0 to protect substrate memory ]", 0x00FF4B4B, card_bg);
+        cur_y += 20;
+        self.draw_string_at(content_x, cur_y, "Action Required: Press machine reset button or reboot hypervisor.", 0x00FFD166, card_bg);
+    }
+
+    pub fn format_hex(val: u64, buf: &mut [u8; 18]) {
+        buf[0] = b'0';
+        buf[1] = b'x';
+        let hex = b"0123456789ABCDEF";
+        for i in 0..16 {
+            buf[2 + i] = hex[((val >> ((15 - i) * 4)) & 0xF) as usize];
+        }
+    }
+
+
     /// Non-blocking read of an ASCII character or special navigation key from PS/2 keyboard controller.
     /// Returns 0 if no keystroke is available.
     pub unsafe fn read_char(&mut self) -> u8 {

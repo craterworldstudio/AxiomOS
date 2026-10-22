@@ -774,23 +774,40 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    let mut rip: u64 = 0;
+    let mut rsp: u64 = 0;
+    let mut cr3: u64 = 0;
     unsafe {
+        core::arch::asm!("lea {}, [rip]", out(reg) rip);
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        core::arch::asm!("mov {}, cr3", out(reg) cr3);
+
+        crate::serial_print("\n[RUST PANIC] ");
+        if let Some(loc) = info.location() {
+            crate::serial_print(loc.file());
+            crate::serial_print(":");
+            crate::serial_print_hex(loc.line() as u64);
+        }
+        crate::serial_print("\n");
+
         let console = &raw mut crate::console::CONSOLE;
-        if (*console).is_graphics {
-            (*console).set_color(0x00FF4B4B, 0x00101418);
-            (*console).write_str("\n[ FATAL RUST PANIC ]\n");
+        (*console).draw_panic_screen(
+            "KERNEL RUST PANIC (ASSERTION FAILURE)",
+            "Kernel panic!() invoked: internal invariant check or assertion failed",
+            rip,
+            rsp,
+            0,
+            0,
+            cr3,
+            0x202,
+            crate::gdt::KERNEL_CODE_SELECTOR as u64,
+        );
+
+        loop {
+            core::arch::asm!("cli; hlt");
         }
     }
-    let vga = 0xB8000 as *mut u8;
-    let panic_msg = b" FATAL RUST PANIC ";
-    for (i, &byte) in panic_msg.iter().enumerate() {
-        unsafe {
-            *vga.add(i * 2) = byte;
-            *vga.add(i * 2 + 1) = 0x4F; 
-        }
-    }
-    loop { unsafe { core::arch::asm!("cli; hlt"); } }
 }
 
 #[inline(always)]

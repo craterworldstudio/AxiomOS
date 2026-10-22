@@ -14,6 +14,9 @@ pub const OP_CONSOLE_GETCHAR: u64 = 10;
 pub const OP_CONSOLE_SET_CURSOR: u64 = 11;
 pub const OP_STORAGE_READ: u64   = 20;
 pub const OP_STORAGE_WRITE: u64  = 21;
+pub const OP_SYS_REBOOT: u64     = 30;
+pub const OP_SYS_SHUTDOWN: u64   = 31;
+pub const OP_KERNEL_PANIC: u64   = 99;
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;
@@ -469,6 +472,62 @@ pub extern "C" fn sys_invoke_handler(
                         match crate::ata::write_sector(drive, lba, buf) {
                             Ok(()) => SYSCALL_OK,
                             Err(_) => 0xFFFFFFFFFFFFFFFF,
+                        }
+                    }
+                },
+                OP_KERNEL_PANIC => {
+                    unsafe {
+                        crate::serial_print("[KERNEL] OP_KERNEL_PANIC invoked! Scenario: ");
+                        crate::serial_print_hex(arg1);
+                        crate::serial_print("\n");
+
+                        match arg1 {
+                            1 => {
+                                // Scenario 1: GPF (#13) via invalid segment selector
+                                core::arch::asm!("mov ds, ax", in("ax") 0xFFFFu16);
+                            },
+                            2 => {
+                                // Scenario 2: Kernel Page Fault (#14) via unmapped address
+                                let bad_ptr = 0xFFFF_8000_DEAD_BEEF as *mut u64;
+                                *bad_ptr = 0x1337;
+                            },
+                            3 => {
+                                // Scenario 3: Double Fault (#8) via int 8
+                                core::arch::asm!("int 8");
+                            },
+                            4 => {
+                                // Scenario 4: Divide by Zero (#0)
+                                let zero = 0u64;
+                                let num = 42u64;
+                                core::arch::asm!("div {0}", in(reg) zero, inout("rax") num => _, options(nomem, nostack));
+                            },
+                            _ => {
+                                // Scenario 0 / default: Rust assertion failure panic
+                                panic!("Substrate invariant test: manual kernel panic requested by Genesis");
+                            }
+                        }
+                    }
+                    SYSCALL_OK
+                },
+                OP_SYS_REBOOT => {
+                    unsafe {
+                        crate::serial_print("[KERNEL] OP_SYS_REBOOT invoked!\n");
+                        core::arch::asm!("out dx, al", in("dx") 0x64u16, in("al") 0xFEu8, options(nomem, nostack));
+                        loop {
+                            core::arch::asm!("cli; hlt");
+                        }
+                    }
+                },
+                OP_SYS_SHUTDOWN => {
+                    unsafe {
+                        crate::serial_print("[KERNEL] OP_SYS_SHUTDOWN invoked! Powering off substrate...\n");
+                        core::arch::asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x2000u16, options(nomem, nostack));
+                        core::arch::asm!("out dx, ax", in("dx") 0xB004u16, in("ax") 0x2000u16, options(nomem, nostack));
+                        core::arch::asm!("out dx, ax", in("dx") 0x4004u16, in("ax") 0x3400u16, options(nomem, nostack));
+                        core::arch::asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x3400u16, options(nomem, nostack));
+                        core::arch::asm!("out dx, ax", in("dx") 0x600u16, in("ax") 0x2000u16, options(nomem, nostack));
+                        loop {
+                            core::arch::asm!("cli; hlt");
                         }
                     }
                 },

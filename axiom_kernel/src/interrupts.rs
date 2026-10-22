@@ -50,7 +50,13 @@ pub fn init() {
     unsafe {
         asm!("cli");
 
+        IDT[0].set_handler(divide_by_zero_stub as *const () as u64);
+        IDT[0].attributes = 0x8E;
+
         IDT[3].set_handler(breakpoint_stub as *const () as u64);
+
+        IDT[6].set_handler(invalid_opcode_stub as *const () as u64);
+        IDT[6].attributes = 0x8E;
 
         IDT[8].set_handler(double_fault_stub as *const () as u64);
         IDT[8].ist = crate::gdt::DOUBLE_FAULT_IST_INDEX as u8 + 1;
@@ -105,7 +111,9 @@ global_asm!(
 );
 
 extern "C" {
+    fn divide_by_zero_stub();
     fn breakpoint_stub();
+    fn invalid_opcode_stub();
     fn double_fault_stub();
     fn general_protection_fault_stub();
     fn page_fault_stub();
@@ -133,60 +141,73 @@ pub struct ExceptionStackFrame {
     pub cpu_flags: u64,
 }
 
-fn kernel_panic(exception: &str, error_code: u64, frame: &ExceptionStackFrame, cr2: u64) {
+pub fn kernel_panic(exception: &str, error_code: u64, frame: &ExceptionStackFrame, cr2: u64) {
+    let rip = frame.instruction_pointer;
+    let rflags = frame.cpu_flags;
+    let cs = frame.code_segment;
+    let mut rsp: u64 = 0;
+    let mut cr3: u64 = 0;
     unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        core::arch::asm!("mov {}, cr3", out(reg) cr3);
+
         crate::serial_print("\n[KERNEL PANIC] EXCEPTION: ");
         crate::serial_print(exception);
         crate::serial_print(" RIP: ");
-        crate::serial_print_hex(frame.instruction_pointer);
+        crate::serial_print_hex(rip);
         crate::serial_print(" CR2: ");
         crate::serial_print_hex(cr2);
         crate::serial_print(" ERROR_CODE: ");
         crate::serial_print_hex(error_code);
         crate::serial_print("\n");
-    }
 
-    let vga = 0xB8000 as *mut u8;
-    
-    // Clear the screen to blue (0x1F = White text on Blue background)
-    for i in 0..2000 {
-        unsafe {
-            *vga.add(i * 2) = b' ';
-            *vga.add(i * 2 + 1) = 0x1F;
+        let console = &raw mut crate::console::CONSOLE;
+        (*console).draw_panic_screen(
+            exception,
+            "Hardware Exception Vector trapped in Ring 0 / Microkernel Substrate",
+            rip,
+            rsp,
+            cr2,
+            error_code,
+            cr3,
+            rflags,
+            cs,
+        );
+
+        loop {
+            asm!("cli; hlt");
         }
     }
+}
 
-    let print_str = |row: isize, col: isize, text: &[u8]| {
-        let offset = (row * 80 + col) * 2;
-        for (i, &byte) in text.iter().enumerate() {
-            unsafe {
-                *vga.offset(offset + i as isize * 2) = byte;
-                *vga.offset(offset + i as isize * 2 + 1) = 0x4F; // White on Red
-            }
-        }
-    };
+global_asm!(
+    ".global divide_by_zero_stub",
+    "divide_by_zero_stub:",
+    "xor rsi, rsi",
+    "mov rdi, rsp",
+    "call divide_by_zero_handler",
+    "cli",
+    "hlt",
+);
 
-    // Draw the Box
-    print_str(4, 20, b"========================================");
-    print_str(5, 20, b"|          AXIOM KERNEL PANIC          |");
-    print_str(6, 20, b"|                                      |");
-    print_str(7, 20, b"|  EXCEPTION:                          |");
-    print_str(8, 20, b"|  RIP:                                |");
-    print_str(9, 20, b"|  CR2:                                |");
-    print_str(10, 20, b"|  ERROR:                              |");
-    print_str(11, 20, b"|                                      |");
-    print_str(12, 20, b"|            SYSTEM HALTED             |");
-    print_str(13, 20, b"========================================");
+#[no_mangle]
+pub extern "C" fn divide_by_zero_handler(frame: &ExceptionStackFrame, error_code: u64) {
+    kernel_panic("DIVIDE BY ZERO FAULT (#0)", error_code, frame, 0);
+}
 
-    // Print values
-    print_str(7, 34, exception.as_bytes());
-    crate::print_hex_64(frame.instruction_pointer, (8 * 80 + 29) * 2, vga);
-    crate::print_hex_64(cr2, (9 * 80 + 29) * 2, vga);
-    crate::print_hex_64(error_code, (10 * 80 + 29) * 2, vga);
+global_asm!(
+    ".global invalid_opcode_stub",
+    "invalid_opcode_stub:",
+    "xor rsi, rsi",
+    "mov rdi, rsp",
+    "call invalid_opcode_handler",
+    "cli",
+    "hlt",
+);
 
-    loop {
-        unsafe { asm!("cli; hlt"); }
-    }
+#[no_mangle]
+pub extern "C" fn invalid_opcode_handler(frame: &ExceptionStackFrame, error_code: u64) {
+    kernel_panic("INVALID OPCODE FAULT (#6)", error_code, frame, 0);
 }
 
 global_asm!(

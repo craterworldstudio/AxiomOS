@@ -220,11 +220,8 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             println!("  pwd                  - Print current directory path");
             println!("  clear                - Clear console canvas");
             println!("  reboot               - Trigger hardware system reboot");
-            println!();
-            ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Cyan
-            println!("  pwd                  - Print current directory path");
-            println!("  clear                - Clear console canvas");
-            println!("  reboot               - Trigger hardware system reboot");
+            println!("  shutdown / poweroff  - Cleanly power down substrate / hypervisor");
+            println!("  kpanic [scenario]    - Test Kernel Panic diagnostics (assert/gpf/pf/df/div0)");
             println!();
             ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Cyan
             println!("Available Executables (/apps/sys):");
@@ -398,9 +395,45 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             return;
         },
         "reboot" => {
+            ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
             println!("Rebooting AxiomOS substrate...");
             unsafe {
-                core::arch::asm!("out dx, al", in("dx") 0x64u16, in("al") 0xFEu8, options(nomem, nostack));
+                libaxiom::syscall::invoke_short(0x100000005, libaxiom::syscall::OP_SYS_REBOOT, 0, 0);
+            }
+            return;
+        },
+        "shutdown" | "poweroff" => {
+            ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
+            println!("Powering down AxiomOS substrate...");
+            unsafe {
+                libaxiom::syscall::invoke_short(0x100000005, libaxiom::syscall::OP_SYS_SHUTDOWN, 0, 0);
+            }
+            return;
+        },
+        "kpanic" | "panic" => {
+            let scenario = match arg_str {
+                "gpf" | "1" => 1u64,
+                "pagefault" | "pf" | "2" => 2u64,
+                "doublefault" | "df" | "3" => 3u64,
+                "divzero" | "div0" | "4" => 4u64,
+                "help" => {
+                    ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                    println!("AxiomOS Kernel Panic Test Scenarios:");
+                    ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                    println!("  kpanic assert        - Kernel Rust assertion failure panic!() [default]");
+                    println!("  kpanic gpf           - General Protection Fault (#13) test");
+                    println!("  kpanic pagefault     - Kernel Page Fault (#14) unmapped dereference");
+                    println!("  kpanic doublefault   - Double Fault (#8) exception test");
+                    println!("  kpanic divzero       - Divide by Zero (#0) hardware trap test");
+                    return;
+                },
+                _ => 0u64, // Default: assert
+            };
+
+            ConsoleWriter::set_color(0x00FF4B4B, 0x00101418); // Crimson Red
+            println!("[TRIGGER] Invoking Kernel Panic Diagnostic Scenario: {}...", if arg_str.is_empty() { "assert" } else { arg_str });
+            unsafe {
+                libaxiom::syscall::invoke_short(0x100000005, libaxiom::syscall::OP_KERNEL_PANIC, scenario, 0);
             }
             return;
         },
@@ -482,14 +515,40 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     }
 
     // Try looking up:
-    // 1. apps/sys/<cmd>.bin
-    // 2. apps/sys/<cmd>
-    // 3. <current_map>/<cmd>
-    // 4. <current_map>/<cmd>.bin
-    // 5. 0/<cmd> (path lookup)
+    // - If cmd contains '/': resolve via explicit path (./local or /apps/sys/...)
+    // - If cmd is a bare word: search ONLY apps/sys/<cmd>.bin and apps/sys/<cmd>
     let mut target_token = None;
 
-    {
+    if cmd.contains('/') {
+        if cmd.starts_with("./") {
+            let local_cmd = &cmd[2..];
+            target_token = graph.lookup(*current_map, local_cmd);
+            if target_token.is_none() {
+                let mut bin_path: [u8; 64] = [0; 64];
+                let cmd_bytes = local_cmd.as_bytes();
+                let clen = core::cmp::min(cmd_bytes.len(), 50);
+                bin_path[..clen].copy_from_slice(&cmd_bytes[..clen]);
+                bin_path[clen..clen + 4].copy_from_slice(b".bin");
+                if let Ok(bp_str) = core::str::from_utf8(&bin_path[..clen + 4]) {
+                    target_token = graph.lookup(*current_map, bp_str);
+                }
+            }
+        } else {
+            let clean_cmd = cmd.trim_matches('/');
+            target_token = graph.lookup(0, clean_cmd);
+            if target_token.is_none() {
+                let mut bin_path: [u8; 64] = [0; 64];
+                let cmd_bytes = clean_cmd.as_bytes();
+                let clen = core::cmp::min(cmd_bytes.len(), 50);
+                bin_path[..clen].copy_from_slice(&cmd_bytes[..clen]);
+                bin_path[clen..clen + 4].copy_from_slice(b".bin");
+                if let Ok(bp_str) = core::str::from_utf8(&bin_path[..clen + 4]) {
+                    target_token = graph.lookup(0, bp_str);
+                }
+            }
+        }
+    } else {
+        // Bare command: search system binary catalog (apps/sys/<cmd>.bin and apps/sys/<cmd>)
         let mut bin_path: [u8; 64] = [0; 64];
         let pfx = b"apps/sys/";
         bin_path[..pfx.len()].copy_from_slice(pfx);
@@ -502,38 +561,16 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         if let Ok(bp_str) = core::str::from_utf8(&bin_path[..total]) {
             target_token = graph.lookup(0, bp_str);
         }
-    }
 
-    if target_token.is_none() {
-        let mut bin_path: [u8; 64] = [0; 64];
-        let pfx = b"apps/sys/";
-        bin_path[..pfx.len()].copy_from_slice(pfx);
-        let cmd_bytes = cmd.as_bytes();
-        let clen = core::cmp::min(cmd_bytes.len(), 50);
-        bin_path[pfx.len()..pfx.len() + clen].copy_from_slice(&cmd_bytes[..clen]);
-        let total = pfx.len() + clen;
-        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..total]) {
-            target_token = graph.lookup(0, bp_str);
+        if target_token.is_none() {
+            let mut bin_path2: [u8; 64] = [0; 64];
+            bin_path2[..pfx.len()].copy_from_slice(pfx);
+            bin_path2[pfx.len()..pfx.len() + clen].copy_from_slice(&cmd_bytes[..clen]);
+            let total2 = pfx.len() + clen;
+            if let Ok(bp_str) = core::str::from_utf8(&bin_path2[..total2]) {
+                target_token = graph.lookup(0, bp_str);
+            }
         }
-    }
-
-    if target_token.is_none() {
-        target_token = graph.lookup(*current_map, cmd);
-    }
-
-    if target_token.is_none() {
-        let mut bin_path: [u8; 64] = [0; 64];
-        let cmd_bytes = cmd.as_bytes();
-        let clen = core::cmp::min(cmd_bytes.len(), 50);
-        bin_path[..clen].copy_from_slice(&cmd_bytes[..clen]);
-        bin_path[clen..clen + 4].copy_from_slice(b".bin");
-        if let Ok(bp_str) = core::str::from_utf8(&bin_path[..clen + 4]) {
-            target_token = graph.lookup(*current_map, bp_str);
-        }
-    }
-
-    if target_token.is_none() && cmd.contains('/') {
-        target_token = graph.lookup(0, cmd.trim_matches('/'));
     }
 
     let token = match target_token {
@@ -549,9 +586,35 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     };
 
     let target_node = &graph.nodes[token.target_id];
-    if target_node.kind != GraphObjectKind::Blob {
+    if target_node.kind == GraphObjectKind::DirectoryMap {
         println!("axiom: {}: Is a directory", cmd);
         return;
+    }
+    if target_node.kind == GraphObjectKind::DeviceEndpoint {
+        println!("axiom: {}: Cannot execute capability endpoint", cmd);
+        return;
+    }
+    if target_node.kind != GraphObjectKind::Blob {
+        println!("axiom: {}: Not an executable binary", cmd);
+        return;
+    }
+
+    // Security & Execution Guard:
+    // 1. Check capability rights: must possess RIGHTS_EXEC
+    if (token.rights & libaxiom::fs::RIGHTS_EXEC) == 0 {
+        ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+        println!("axiom: {}: Permission denied (not executable)", cmd);
+        return;
+    }
+
+    // 2. Reject common non-executable document file extensions
+    let non_exec_exts = [".txt", ".md", ".sys", ".ledger", ".log", ".csv", ".json"];
+    for ext in non_exec_exts {
+        if cmd.ends_with(ext) {
+            ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+            println!("axiom: cannot execute '{}': Exec format error", cmd);
+            return;
+        }
     }
 
     // 5. Prepare CapKeyring

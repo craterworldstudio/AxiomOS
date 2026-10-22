@@ -14,6 +14,9 @@ pub const OP_CONSOLE_GETCHAR: u64 = 10;
 pub const OP_CONSOLE_SET_CURSOR: u64 = 11;
 pub const OP_STORAGE_READ: u64   = 20;
 pub const OP_STORAGE_WRITE: u64  = 21;
+pub const OP_SYS_REBOOT: u64     = 30;
+pub const OP_SYS_SHUTDOWN: u64   = 31;
+pub const OP_KERNEL_PANIC: u64   = 99;
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;
