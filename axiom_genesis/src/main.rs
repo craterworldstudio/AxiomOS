@@ -309,17 +309,67 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 cwd[0] = b'/';
                 *cwd_len = 1;
             } else if arg_str == ".." {
-                *current_map = 0;
-                cwd[0] = b'/';
-                *cwd_len = 1;
+                let mut parent_buf = [0u8; 64];
+                let mut parent_len = 0;
+                let mut is_single_depth = false;
+                let mut found_parent = false;
+
+                if let Ok(cur_str) = core::str::from_utf8(&cwd[..*cwd_len]) {
+                    let trimmed = cur_str.trim_matches('/');
+                    if let Some(last_slash) = trimmed.rfind('/') {
+                        let p = &trimmed[..last_slash];
+                        let pb = p.as_bytes();
+                        parent_len = core::cmp::min(pb.len(), 63);
+                        parent_buf[..parent_len].copy_from_slice(&pb[..parent_len]);
+                        found_parent = true;
+                    } else if !trimmed.is_empty() {
+                        is_single_depth = true;
+                    }
+                }
+
+                if found_parent {
+                    if let Ok(p_str) = core::str::from_utf8(&parent_buf[..parent_len]) {
+                        if let Some(token) = unsafe { GRAPH.lookup(0, p_str) } {
+                            *current_map = token.target_id;
+                            cwd[..parent_len].copy_from_slice(&parent_buf[..parent_len]);
+                            *cwd_len = parent_len;
+                        } else {
+                            *current_map = 0;
+                            cwd[0] = b'/';
+                            *cwd_len = 1;
+                        }
+                    }
+                } else if is_single_depth {
+                    *current_map = 0;
+                    cwd[0] = b'/';
+                    *cwd_len = 1;
+                }
+            } else if arg_str.starts_with('/') {
+                let clean = arg_str.trim_matches('/');
+                if clean.is_empty() {
+                    *current_map = 0;
+                    cwd[0] = b'/';
+                    *cwd_len = 1;
+                } else if let Some(token) = unsafe { GRAPH.lookup(0, clean) } {
+                    if unsafe { GRAPH.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap } {
+                        *current_map = token.target_id;
+                        let clen = core::cmp::min(clean.len(), 62);
+                        cwd[..clen].copy_from_slice(&clean.as_bytes()[..clen]);
+                        *cwd_len = clen;
+                    } else {
+                        println!("cd: {}: Not a directory", arg_str);
+                    }
+                } else {
+                    println!("cd: {}: No such file or directory", arg_str);
+                }
             } else if let Some(token) = unsafe { GRAPH.lookup(*current_map, arg_str) } {
                 if unsafe { GRAPH.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap } {
                     *current_map = token.target_id;
                     let clean = arg_str.trim_matches('/');
                     if *cwd_len == 1 && cwd[0] == b'/' {
                         let clen = core::cmp::min(clean.len(), 62);
-                        cwd[1..1 + clen].copy_from_slice(&clean.as_bytes()[..clen]);
-                        *cwd_len = 1 + clen;
+                        cwd[..clen].copy_from_slice(&clean.as_bytes()[..clen]);
+                        *cwd_len = clen;
                     } else if *cwd_len < 60 {
                         cwd[*cwd_len] = b'/';
                         let clen = core::cmp::min(clean.len(), 62 - *cwd_len - 1);
@@ -413,7 +463,13 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 let ent = &mut MAP_CTX.entries[count];
                 ent.name = link.name;
                 let target = &graph.nodes[link.token.target_id];
-                ent.is_dir = if target.kind == GraphObjectKind::DirectoryMap { 1 } else { 0 };
+                ent.is_dir = if target.kind == GraphObjectKind::DirectoryMap { 
+                    1 
+                } else if target.kind == GraphObjectKind::DeviceEndpoint { 
+                    2 
+                } else { 
+                    0 
+                };
                 ent.data_len = target.data_len as u32;
                 ent.rights = link.token.rights;
                 ent.in_use = 1;
@@ -513,6 +569,28 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                     let clen = core::cmp::min(target.data_len, 1024);
                     core::ptr::copy_nonoverlapping(target.data_ptr, BLOB_CTX.data.as_mut_ptr(), clen);
                     BLOB_CTX.length = clen as u32;
+                } else if target.kind == GraphObjectKind::DeviceEndpoint {
+                    if cmd == "axe" {
+                        println!("axe: cannot edit capability endpoint '{}'", exec_args);
+                        return;
+                    }
+                    let slot = target.data_len;
+                    let desc: &[u8] = match slot {
+                        5 => b"[CAPABILITY ENDPOINT: Console Video & Framebuffer Subsystem (Slot 5)]\nOperations: OP_CONSOLE_WRITE(6), CLEAR(7), BANNER(8), COLOR(9), GETCHAR(10), SET_CURSOR(11)\nChannels: Framebuffer (1280x720 32bpp) & PS/2 Keyboard Input\n",
+                        7 => b"[CAPABILITY ENDPOINT: Primary ATA PIO Storage Controller (Slot 7)]\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nChannels: IDE Port 0x1F0..0x1F7 (512-byte raw sectors)\n",
+                        _ => b"[CAPABILITY ENDPOINT: Hardware Device Interface]\n",
+                    };
+                    let dlen = desc.len();
+                    BLOB_CTX.data[..dlen].copy_from_slice(desc);
+                    BLOB_CTX.length = dlen as u32;
+                } else if target.kind == GraphObjectKind::DirectoryMap {
+                    if cmd == "axe" {
+                        println!("axe: cannot edit directory map '{}'", exec_args);
+                        return;
+                    }
+                    let msg = b"cat: Is a capability directory map (use 'ls' to view entries)\n";
+                    BLOB_CTX.data[..msg.len()].copy_from_slice(msg);
+                    BLOB_CTX.length = msg.len() as u32;
                 }
             }
             &raw mut BLOB_CTX as u64

@@ -17,12 +17,16 @@ int main(int argc, char** argv, CapKeyring* keyring) {
         CapEntryInfo* ent = &map->entries[i];
         if (!ent->in_use) continue;
         
-        if (ent->is_dir) {
-            axiom_set_color(0x0000D2FF, 0x00101418); // Electric Cyan
+        if (ent->is_dir == 1) {
+            axiom_set_color(0x0000D2FF, 0x00101418); // Electric Cyan (Directory Map)
             axiom_print(ent->name);
             axiom_print("/  ");
+        } else if (ent->is_dir == 2) {
+            axiom_set_color(0x00FFD166, 0x00101418); // Gold Yellow (Capability Endpoint)
+            axiom_print(ent->name);
+            axiom_print("@  ");
         } else {
-            axiom_set_color(0x00E0E0E0, 0x00101418); // Crisp Silver
+            axiom_set_color(0x00E0E0E0, 0x00101418); // Crisp Silver (File Blob)
             axiom_print(ent->name);
             axiom_print("  ");
         }
