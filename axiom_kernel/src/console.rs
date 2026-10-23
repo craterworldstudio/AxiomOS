@@ -20,6 +20,7 @@ pub struct Console {
     pub is_graphics: bool,
     pub shift_pressed: bool,
     pub ctrl_pressed: bool,
+    pub alt_pressed: bool,
     pub extended_prefix: bool,
 }
 
@@ -37,6 +38,7 @@ pub static mut CONSOLE: Console = Console {
     is_graphics: false,
     shift_pressed: false,
     ctrl_pressed: false,
+    alt_pressed: false,
     extended_prefix: false,
 };
 
@@ -447,9 +449,215 @@ impl Console {
         cur_y += 16;
 
         // Halting Banner
-        self.draw_string_at(content_x, cur_y, "[ SYSTEM HALTED: Microkernel frozen in Ring 0 to protect substrate memory ]", 0x00FF4B4B, card_bg);
+        self.draw_string_at(content_x, cur_y, "[ SYSTEM HALTED: Microkernel Ring 0 Substrate Protection Engaged ]", 0x00FF4B4B, card_bg);
         cur_y += 20;
-        self.draw_string_at(content_x, cur_y, "Action Required: Press machine reset button or reboot hypervisor.", 0x00FFD166, card_bg);
+        self.draw_string_at(content_x, cur_y, "Emergency Reboot: Press Ctrl+Shift+Alt then type R-E-S-E-T then Enter to reboot.", 0x00FFD166, card_bg);
+        cur_y += 18;
+        self.draw_string_at(content_x, cur_y, "Manual Reset    : Press physical machine reset button or reboot hypervisor.", 0x00A0A0A0, card_bg);
+        cur_y += 22;
+        self.draw_string_at(content_x, cur_y, "> Emergency Sequence: [ _ _ _ _ _ ]  (Waiting for Ctrl+Shift+Alt...)", 0x0000D2FF, card_bg);
+    }
+
+    pub unsafe fn panic_emergency_reboot_loop(&mut self) -> ! {
+        let box_x0 = if self.width > 1000 { (self.width - 1000) / 2 } else { 20 };
+        let box_w = core::cmp::min(1000, self.width - 40);
+        let content_x = box_x0 + 24;
+        let card_bg = 0x00151922;
+        let status_y = 70 + 448; // Exactly matches emergency line in draw_panic_screen
+
+        let clear_status_line = |fb_base: *mut u32, pitch: usize| {
+            if fb_base.is_null() { return; }
+            for r in 0..18 {
+                let y = status_y + r;
+                let row_start = y * pitch;
+                for c in 0..(box_w - 48) {
+                    *fb_base.add(row_start + content_x + c) = card_bg;
+                }
+            }
+        };
+
+        // Drain pending keyboard bytes
+        for _ in 0..32 {
+            let status: u8;
+            core::arch::asm!("in al, dx", in("dx") 0x64u16, out("al") status, options(nomem, nostack));
+            if (status & 1) != 0 {
+                let _: u8;
+                core::arch::asm!("in al, dx", in("dx") 0x60u16, out("al") _, options(nomem, nostack));
+            } else {
+                break;
+            }
+        }
+
+        let mut ctrl = false;
+        let mut shift = false;
+        let mut alt = false;
+        let mut armed = false;
+        let mut ext_prefix = false;
+        let mut step = 0usize; // 0: R, 1: E, 2: S, 3: E, 4: T, 5: Enter
+
+        loop {
+            let status: u8;
+            core::arch::asm!("in al, dx", in("dx") 0x64u16, out("al") status, options(nomem, nostack));
+            if (status & 1) == 0 {
+                core::arch::asm!("pause", options(nomem, nostack));
+                continue;
+            }
+
+            let scancode: u8;
+            core::arch::asm!("in al, dx", in("dx") 0x60u16, out("al") scancode, options(nomem, nostack));
+
+            if scancode == 0xE0 {
+                ext_prefix = true;
+                continue;
+            }
+            let is_ext = ext_prefix;
+            ext_prefix = false;
+
+            // Track Shift
+            if !is_ext {
+                if scancode == 0x2A || scancode == 0x36 {
+                    shift = true;
+                } else if scancode == 0xAA || scancode == 0xB6 {
+                    shift = false;
+                }
+            }
+
+            // Track Ctrl
+            if scancode == 0x1D {
+                ctrl = true;
+            } else if scancode == 0x9D {
+                ctrl = false;
+            }
+
+            // Track Alt
+            if scancode == 0x38 {
+                alt = true;
+            } else if scancode == 0xB8 {
+                alt = false;
+            }
+
+            // Check if Ctrl+Shift+Alt combination is triggered
+            if ctrl && shift && alt && !armed {
+                armed = true;
+                step = 0;
+                clear_status_line(self.fb_base, self.pitch);
+                self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ _ _ _ _ _ ]  (ARMED! Type R-E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                crate::serial_print("[PANIC] Emergency reboot sequence ARMED via Ctrl+Shift+Alt!\n");
+            }
+
+            // If it's a key release (break code), ignore it
+            if (scancode & 0x80) != 0 {
+                continue;
+            }
+
+            // Ignore modifier make codes themselves when checking letters
+            if scancode == 0x1D || scancode == 0x2A || scancode == 0x36 || scancode == 0x38 {
+                continue;
+            }
+
+            if armed || (ctrl && shift && alt) {
+                match step {
+                    0 => {
+                        if scancode == 0x13 { // 'R'
+                            step = 1;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R _ _ _ _ ]  (ARMED! Type E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                            crate::serial_print("[PANIC] Emergency Key 'R' matched (1/5)\n");
+                        }
+                    },
+                    1 => {
+                        if scancode == 0x12 { // 'E'
+                            step = 2;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R E _ _ _ ]  (ARMED! Type S-E-T then Enter)", 0x00FFD166, card_bg);
+                            crate::serial_print("[PANIC] Emergency Key 'E' matched (2/5)\n");
+                        } else if scancode == 0x13 {
+                            step = 1;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R _ _ _ _ ]  (ARMED! Type E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        } else {
+                            step = 0;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ _ _ _ _ _ ]  (ARMED! Type R-E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        }
+                    },
+                    2 => {
+                        if scancode == 0x1F { // 'S'
+                            step = 3;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R E S _ _ ]  (ARMED! Type E-T then Enter)", 0x00FFD166, card_bg);
+                            crate::serial_print("[PANIC] Emergency Key 'S' matched (3/5)\n");
+                        } else if scancode == 0x13 {
+                            step = 1;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R _ _ _ _ ]  (ARMED! Type E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        } else {
+                            step = 0;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ _ _ _ _ _ ]  (ARMED! Type R-E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        }
+                    },
+                    3 => {
+                        if scancode == 0x12 { // 'E'
+                            step = 4;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R E S E _ ]  (ARMED! Type T then Enter)", 0x00FFD166, card_bg);
+                            crate::serial_print("[PANIC] Emergency Key 'E' matched (4/5)\n");
+                        } else if scancode == 0x13 {
+                            step = 1;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R _ _ _ _ ]  (ARMED! Type E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        } else {
+                            step = 0;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ _ _ _ _ _ ]  (ARMED! Type R-E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        }
+                    },
+                    4 => {
+                        if scancode == 0x14 { // 'T'
+                            step = 5;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R E S E T ]  (PRESS ENTER TO REBOOT)", 0x002EE59D, card_bg);
+                            crate::serial_print("[PANIC] Emergency Key 'T' matched (5/5) -- Waiting for Enter\n");
+                        } else if scancode == 0x13 {
+                            step = 1;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R _ _ _ _ ]  (ARMED! Type E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        } else {
+                            step = 0;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ _ _ _ _ _ ]  (ARMED! Type R-E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        }
+                    },
+                    5 => {
+                        if scancode == 0x1C { // Enter
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> EMERGENCY REBOOT CONFIRMED: Resetting machine substrate now...", 0x00FF4B4B, card_bg);
+                            crate::serial_print("[PANIC] EMERGENCY REBOOT CONFIRMED! Resetting machine substrate...\n");
+
+                            // Hardware reset sequence:
+                            // 1. 8042 Keyboard controller pulse
+                            core::arch::asm!("out dx, al", in("dx") 0x64u16, in("al") 0xFEu8, options(nomem, nostack));
+                            // 2. PCI reset register
+                            core::arch::asm!("out dx, al", in("dx") 0xCF9u16, in("al") 0x06u8, options(nomem, nostack));
+                            // 3. QEMU ACPI reset
+                            core::arch::asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x2000u16, options(nomem, nostack));
+                            // 4. Triple fault fallback
+                            let null_idtr: [u8; 10] = [0; 10];
+                            core::arch::asm!("lidt [{}]", in(reg) null_idtr.as_ptr(), options(readonly, nostack));
+                            core::arch::asm!("int 3");
+                        } else if scancode == 0x13 {
+                            step = 1;
+                            clear_status_line(self.fb_base, self.pitch);
+                            self.draw_string_at(content_x, status_y, "> Emergency Sequence: [ R _ _ _ _ ]  (ARMED! Type E-S-E-T then Enter)", 0x00FFD166, card_bg);
+                        }
+                    },
+                    _ => {
+                        step = 0;
+                    }
+                }
+            }
+        }
     }
 
     pub fn format_hex(val: u64, buf: &mut [u8; 18]) {
@@ -507,7 +715,17 @@ impl Console {
             return 0;
         }
 
-        // 6. Handle extended navigation keys (Arrow keys, Delete, Home, End)
+        // 6. Track Alt key state (Left Alt = 0x38 / 0xB8, Right Alt = 0xE0 0x38 / 0xE0 0xB8)
+        if scancode == 0x38 {
+            self.alt_pressed = true;
+            return 0;
+        }
+        if scancode == 0xB8 {
+            self.alt_pressed = false;
+            return 0;
+        }
+
+        // 7. Handle extended navigation keys (Arrow keys, Delete, Home, End)
         if is_extended {
             if (scancode & 0x80) != 0 {
                 return 0; // Ignore extended break codes

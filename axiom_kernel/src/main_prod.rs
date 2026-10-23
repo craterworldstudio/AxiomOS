@@ -804,9 +804,7 @@ fn panic(info: &PanicInfo) -> ! {
             crate::gdt::KERNEL_CODE_SELECTOR as u64,
         );
 
-        loop {
-            core::arch::asm!("cli; hlt");
-        }
+        (*console).panic_emergency_reboot_loop();
     }
 }
 

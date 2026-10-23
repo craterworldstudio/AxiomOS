@@ -2,6 +2,15 @@
 
 int main(int argc, char** argv, CapKeyring* keyring) {
     (void)keyring;
+    if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+        axiom_set_color(COLOR_GOLD, 0x00101418);
+        axiom_println("Usage: echo [text] [> file] [options]");
+        axiom_set_color(COLOR_SILVER, 0x00101418);
+        axiom_println("Print text to console or write/redirect into a file blob.");
+        axiom_println("Options:");
+        axiom_println("  -h, --help    Show this command reference manual");
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "-dh") == 0) {
         axiom_println("  echo                 - print arguments to console or redirect to file");
         return 0;

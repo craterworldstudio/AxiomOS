@@ -174,9 +174,7 @@ pub fn kernel_panic(exception: &str, error_code: u64, frame: &ExceptionStackFram
             cs,
         );
 
-        loop {
-            asm!("cli; hlt");
-        }
+        (*console).panic_emergency_reboot_loop();
     }
 }
 

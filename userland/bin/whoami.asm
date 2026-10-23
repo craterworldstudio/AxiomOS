@@ -19,9 +19,19 @@ _start:
     test rax, rax
     jz .print_default
 
-    ; Check if argv[1] is "-dh"
+    ; Check if argv[1] is "-h"
     cmp byte [rax], '-'
     jne .print_default
+    cmp byte [rax + 1], 'h'
+    jne .check_dh
+    cmp byte [rax + 2], 0
+    jne .check_dh
+    lea rbx, [msg_h]
+    mov r12, msg_h_len
+    jmp .loop
+
+.check_dh:
+    ; Check if argv[1] is "-dh"
     cmp byte [rax + 1], 'd'
     jne .print_default
     cmp byte [rax + 2], 'h'
@@ -71,3 +81,6 @@ msg_len equ $ - msg
 
 msg_dh: db "  whoami               - display active user identity and authority keyring", 10
 msg_dh_len equ $ - msg_dh
+
+msg_h: db "Usage: whoami [options]", 10, "Display active user identity and CSpace authority keyring.", 10, "Options:", 10, "  -h, --help    Show this command reference manual", 10
+msg_h_len equ $ - msg_h

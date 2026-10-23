@@ -193,6 +193,16 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     }
 
     // 1. Check for `curr ` prefix override
+    if input == "curr" || input == "curr -h" || input == "curr --help" {
+        ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
+        println!("Usage: curr <command> [args...]");
+        ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Silver
+        println!("Execute binary with caller's current keyrings (ledger bypassed).");
+        println!("Options:");
+        println!("  -h, --help    Show this command reference manual");
+        return;
+    }
+
     let (is_curr, effective_input) = if input.starts_with("curr ") {
         (true, input[5..].trim())
     } else {
@@ -211,6 +221,16 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     // 3. Handle built-in shell navigation and inspection commands
     match cmd {
         "help" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: help [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Display the master command reference manual for AxiomOS.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                println!("Tip: Run any command with -h (e.g. ls -h, cd -h) for dedicated help.");
+                return;
+            }
             ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
             println!("AxiomOS Built-in Commands:");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418); // Silver
@@ -272,6 +292,15 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             return;
         },
         "status" | "info" | "icap" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: status [options] (or icap, info)");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Inspect CSpace authority inventory and substrate security invariants.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
             ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald Green
             println!("[ CSPACE AUTHORITY INVENTORY ]");
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
@@ -290,6 +319,17 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             return;
         },
         "cd" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: cd [path] [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Change current working capability directory map.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                println!("  ..            Move up one directory level");
+                println!("  ~             Navigate to root vault (vaults/root)");
+                return;
+            }
             if arg_str.is_empty() || arg_str == "~" {
                 if let Some(vr) = unsafe { GRAPH.lookup(0, "vaults/root") } {
                     *current_map = vr.target_id;
@@ -382,6 +422,15 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             return;
         },
         "pwd" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: pwd [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Print current directory path in the capability graph.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
             if let Ok(p) = core::str::from_utf8(&cwd[..*cwd_len]) {
                 println!("{}", p);
             } else {
@@ -390,11 +439,29 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             return;
         },
         "clear" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: clear [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Clear console canvas and redraw system status banner.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
             ConsoleWriter::draw_banner();
             println!();
             return;
         },
         "reboot" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: reboot [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Trigger hardware system reboot of the AxiomOS substrate.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
             ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
             println!("Rebooting AxiomOS substrate...");
             unsafe {
@@ -403,6 +470,15 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             return;
         },
         "shutdown" | "poweroff" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: shutdown [options] (or poweroff)");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Cleanly power down machine substrate or hypervisor via ACPI.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
             ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
             println!("Powering down AxiomOS substrate...");
             unsafe {
@@ -416,15 +492,19 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 "pagefault" | "pf" | "2" => 2u64,
                 "doublefault" | "df" | "3" => 3u64,
                 "divzero" | "div0" | "4" => 4u64,
-                "help" => {
+                "help" | "-h" | "--help" => {
                     ConsoleWriter::set_color(0x00FFD166, 0x00101418);
-                    println!("AxiomOS Kernel Panic Test Scenarios:");
+                    println!("Usage: kpanic [scenario] [options]");
                     ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
-                    println!("  kpanic assert        - Kernel Rust assertion failure panic!() [default]");
-                    println!("  kpanic gpf           - General Protection Fault (#13) test");
-                    println!("  kpanic pagefault     - Kernel Page Fault (#14) unmapped dereference");
-                    println!("  kpanic doublefault   - Double Fault (#8) exception test");
-                    println!("  kpanic divzero       - Divide by Zero (#0) hardware trap test");
+                    println!("Trigger test hardware exception vectors and diagnostic panic screen.");
+                    println!("Scenarios:");
+                    println!("  assert        - Kernel Rust assertion failure panic!() [default]");
+                    println!("  gpf           - General Protection Fault (#13) test");
+                    println!("  pagefault     - Kernel Page Fault (#14) unmapped dereference");
+                    println!("  doublefault   - Double Fault (#8) exception test");
+                    println!("  divzero       - Divide by Zero (#0) hardware trap test");
+                    println!("Options:");
+                    println!("  -h, --help    Show this command reference manual");
                     return;
                 },
                 _ => 0u64, // Default: assert
@@ -471,7 +551,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     }
 
     // Determine target map for directory listings
-    let target_map_id = if cmd == "ls" && !exec_args.is_empty() && exec_args != "-dh" {
+    let target_map_id = if cmd == "ls" && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
         if let Some(token) = graph.lookup(*current_map, exec_args) {
             if graph.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap {
                 token.target_id
@@ -622,7 +702,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     username_buf[..4].copy_from_slice(b"root");
 
     // If command is `cat` or `axe`, resolve target file blob into BLOB_CTX
-    let storage_cap_val = if (cmd == "cat" || cmd == "axe") && !exec_args.is_empty() && exec_args != "-dh" {
+    let storage_cap_val = if (cmd == "cat" || cmd == "axe") && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
         unsafe {
             BLOB_CTX.length = 0;
             BLOB_CTX.modified = 0;
