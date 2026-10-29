@@ -113,13 +113,34 @@ We are utilizing a **Laboratory-First Strategy**:
   - [x] `axe` text editor: Existing file loading from CapGraph and multi-line file editing.
 
 ### Phase 8: Sovereign Namespace, Flicker-Free Axe Editor, Clipboard & Hardware ATA Persistent Storage
-*Status: In Progress*
+*Status: Completed*
 - [x] Architectural Specification & Invariant Plan locked.
-- [ ] Sovereign Capability Namespace migration: `/apps/sys/` (system executables), `/apps/pkg/` (packages), `/meta/` (ledger, identity, motd), `/vaults/` (user data domains), `/edps/` (hardware endpoints: console, drives), `/srvs/` (IPC server channels).
-- [ ] In-place flicker-free `axe` rendering via microkernel `OP_CONSOLE_SET_CURSOR` (OP 11), overwriting rows directly with zero screen clearing.
-- [ ] High-contrast visual cursor rendering in inverted Electric Cyan (`fg = 0x00101418`, `bg = 0x0000D2FF`).
-- [ ] Text selection engine with Shift+Arrow navigation (highlighted in Obsidian Sapphire `0x00005F87`) and internal clipboard buffer (`Ctrl+A`, `Ctrl+C`, `Ctrl+V`).
-- [ ] Freestanding ATA PIO hard disk storage driver (`0x1F0..0x1F7`) wired to `ROOT_SLOT_STORAGE` (`Slot 7`), serializing dynamic CapGraph filesystem nodes across reboot on `target/axiom_data.img`.
+- [x] Sovereign Capability Namespace migration: `/apps/sys/` (system executables), `/apps/pkg/` (packages), `/meta/` (ledger, identity, motd), `/vaults/` (user data domains), `/edps/` (hardware endpoints: console, drives), `/srvs/` (IPC server channels).
+- [x] In-place flicker-free `axe` rendering via microkernel `OP_CONSOLE_SET_CURSOR` (OP 11), overwriting rows directly with zero screen clearing.
+- [x] High-contrast visual cursor rendering in inverted Electric Cyan (`fg = 0x00101418`, `bg = 0x0000D2FF`).
+- [x] Text selection engine with Shift+Arrow navigation (highlighted in Obsidian Sapphire `0x00005F87`) and internal clipboard buffer (`Ctrl+A`, `Ctrl+C`, `Ctrl+V`).
+- [x] Freestanding ATA PIO hard disk storage driver (`0x1F0..0x1F7`) wired to `ROOT_SLOT_STORAGE` (`Slot 7`), serializing dynamic CapGraph filesystem nodes across reboot on `target/axiom_data.img`.
+- [x] Non-executable CLI guard: prevents non-executable files (`a.txt`) from freezing the shell when invoked directly.
+- [x] Clean ACPI Hypervisor & Hardware `shutdown` / `poweroff` capability syscall (`OP_SYS_SHUTDOWN = 31`).
+- [x] High-resolution UEFI GOP Kernel Panic diagnostic screen with register dump and test scenarios (`kpanic assert/gpf/pagefault/doublefault/divzero`).
+- [x] Emergency Panic Reboot sequence: bare-metal zero-alloc PS/2 keyboard controller polling detecting `Ctrl+Shift+Alt` + `R-E-S-E-T` + `Enter` with on-screen status updates and triple-fault fallback.
+- [x] Standardized `-h` / `--help` manual flags across all shell built-in and standalone userland binaries (`cat`, `ls`, `echo`, `axe`, `whoami`, `cd`, `pwd`, `clear`, `reboot`, `shutdown`, `kpanic`, `curr`, `status`, `help`).
+
+### Phase 8.5: Continual Storage Space, Disk Partitions & Extent Block Engine ("VaultStorage")
+*Status: Architecture Defined / Next Phase*
+- [ ] **Partition Table Substrate (GPT & MBR Detection)**:
+  - Detection and parsing of GPT (GUID Partition Table) and legacy MBR partition schemes on `edps/drives/ata0`.
+  - Registration of Sovereign Axiom Vault partition types (`0xA8` / custom GPT GUID `A8104D5F-...`).
+  - Derived partition capability endpoints (`edps/drives/ata0p1`, `edps/drives/ata0p2`) with hardware-enforced LBA sector range attenuation.
+- [ ] **Continual Extent-Based Block Allocator**:
+  - Replaces the 8-file / 1024-byte prototype superblock with a scalable Free Block Bitmap allocator.
+  - Multi-extent and contiguous sector chaining supporting arbitrary file sizes from kilobytes to gigabytes.
+  - Dynamic directory inodes stored on-disk instead of static in-memory node limits.
+- [ ] **Block Buffer Cache & Transactional Journal**:
+  - In-memory LRU sector cache in userland storage service minimizing hardware I/O latency.
+  - Write-ahead journaling or copy-on-write (CoW) metadata updates to guarantee filesystem consistency on sudden crash or power loss.
+- [ ] **AHCI MMIO & DMA Driver (Phase 8.5+ Transition)**:
+  - Upgrade from 16-bit PIO port polling to PCI AHCI Bus Master DMA, achieving full bus-speed disk throughput.
 
 ### Phase 9: Ring 3 Multi-Process Lifecycle & Task Spawner
 *Status: Planned*

@@ -108,20 +108,22 @@ Instead of a flat integer UID model with a dangerous god-mode `root` UID, AxiomO
 
 ## 6. Storage Implementation Roadmap
 
-### Stage 1: In-Memory RamFS (`libaxiom/fs`) — Phase 7B
+### Stage 1: In-Memory RamFS (`libaxiom/fs`) — Phase 7B *(Completed)*
 - Implemented as a lightweight, lock-free memory table.
 - Stores system text files, initial configs, and shell utilities in RAM.
-- Powers the interactive Genesis shell:
-  - `help` — displays available commands and active capabilities.
-  - `ls` — lists entries in current directory capability.
-  - `cat <file>` — reads and displays file content.
-  - `echo "text" > <file>` — writes data to file capability.
-  - `status` — inspects memory, capability count, and scheduler ticks.
+- Powers the interactive Genesis shell (`help`, `ls`, `cat`, `echo`, `status`).
 
-### Stage 2: Block-Backed Persistent Storage Driver — Phase 7C
-- Driver runs in user mode as a capability server.
-- Interacts with UEFI/AHCI/NVMe disk controllers via memory-mapped I/O (MMIO) capabilities.
-- Mounts FAT32 or Axiom Native Block Vaults.
+### Stage 2: Hardware ATA PIO Persistent Storage Driver — Phase 8 *(Completed)*
+- Direct bare-metal IDE/ATA PIO controller driver (`axiom_kernel/src/ata.rs`) mapping I/O ports `0x1F0..0x1F7`.
+- Hardware capability endpoint `edps/drives/ata0` mapped to `ROOT_SLOT_STORAGE` (`Slot 7`).
+- Implemented `DiskSuperblock` (Magic `0x4158494F4D5F4653`) persisting dynamic CapGraph nodes across reboots on `target/axiom_data.img`.
+- Automatic disk mount at Genesis boot and synchronous writeback (`sync_disk`) on file modifications.
+
+### Stage 3: Continual Storage Space, Partitions & Extent Block Allocator — Phase 8.5 *(Next Up)*
+- **Partitioning Substrate (GPT / MBR)**: Parses partition tables on `edps/drives/ata0` to derive slice capabilities (`ata0p1`, `ata0p2`) with bounded LBA ranges.
+- **Dynamic Extent Allocator**: Replaces the 8-entry prototype with a Free Block Bitmap, supporting files of arbitrary size spanning contiguous and linked block extents.
+- **Disk Buffer Cache**: In-memory LRU block cache in userland minimizing PIO round-trips.
+- **DMA Acceleration**: Transition from polled PIO to PCI Bus Master AHCI/NVMe DMA.
 
 ---
 
