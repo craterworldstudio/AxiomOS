@@ -13,6 +13,63 @@ pub const MAX_DYNAMIC_DATA: usize = 1024;
 use crate::syscall::{invoke_short, OP_STORAGE_READ, OP_STORAGE_WRITE};
 use crate::ROOT_SLOT_STORAGE;
 
+/// Sovereign VaultStore Constants
+pub const VAULT_MAGIC: u64 = 0x4158494F4D5F4341; // "AXIOM_CA" (Sovereign CapObject Vault)
+pub const MAX_EXTENTS: usize = 4;
+pub const MAX_CAPOBJECT_ENTRIES: usize = 16;
+pub const PARTITION_DATA_START_LBA: u32 = 10240; // ata0p2 starting LBA
+pub const PARTITION_SYS_START_LBA: u32  = 2048;  // ata0p1 starting LBA
+
+/// Dynamic extent descriptor representing a contiguous run of sectors
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ExtentRun {
+    pub start_lba: u32,
+    pub sector_count: u32,
+}
+
+/// Sovereign CapObject Descriptor (replaces Unix Inode)
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapObjectEntry {
+    pub name: [u8; 32],
+    pub parent_map: u32,
+    pub data_len: u32,
+    pub extent_count: u32,
+    pub extents: [ExtentRun; MAX_EXTENTS],
+    pub rights: u8,
+    pub _reserved: [u8; 7],
+}
+
+impl Default for CapObjectEntry {
+    fn default() -> Self {
+        Self {
+            name: [0; 32],
+            parent_map: 0,
+            data_len: 0,
+            extent_count: 0,
+            extents: [ExtentRun { start_lba: 0, sector_count: 0 }; MAX_EXTENTS],
+            rights: 0,
+            _reserved: [0; 7],
+        }
+    }
+}
+
+/// Dynamic VaultStore Superblock (512 bytes / 1 sector)
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VaultSuperblock {
+    pub magic: u64, // VAULT_MAGIC
+    pub generation: u64, // Monotonic CoW generation counter
+    pub entry_count: u32,
+    pub bitmap_lba: u32,
+    pub data_start_lba: u32,
+    pub total_sectors: u32,
+    pub entries: [CapObjectEntry; 4], // 4 entries per 512-byte sector descriptor
+    pub _reserved: [u8; 16],
+}
+
+// Fallback legacy structure for backward compatibility during disk migration
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DiskFileEntry {
@@ -26,11 +83,42 @@ pub struct DiskFileEntry {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DiskSuperblock {
-    pub magic: u64, // 0x4158494F4D5F4653 ("AXIOM_FS")
+    pub magic: u64,
     pub entry_count: u32,
     pub _pad: u32,
     pub entries: [DiskFileEntry; 8],
     pub _reserved: [u8; 112],
+}
+
+/// GPT Partition Table Structures
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GptHeader {
+    pub signature: [u8; 8], // "EFI PART"
+    pub revision: u32,
+    pub header_size: u32,
+    pub header_crc: u32,
+    pub reserved: u32,
+    pub current_lba: u64,
+    pub backup_lba: u64,
+    pub first_usable_lba: u64,
+    pub last_usable_lba: u64,
+    pub disk_guid: [u8; 16],
+    pub partition_entry_lba: u64,
+    pub num_partition_entries: u32,
+    pub partition_entry_size: u32,
+    pub partition_entries_crc: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GptPartitionEntry {
+    pub type_guid: [u8; 16],
+    pub unique_guid: [u8; 16],
+    pub start_lba: u64,
+    pub end_lba: u64,
+    pub attributes: u64,
+    pub name: [u16; 36],
 }
 
 // Embedded C and Assembly Binaries compiled from userland/
@@ -210,14 +298,70 @@ impl CapGraph {
         self.add_endpoint(edps_id, "console", 5, RIGHTS_WRITE | RIGHTS_READ);
         self.add_endpoint(edps_drives_id, "ata0", 7, RIGHTS_WRITE | RIGHTS_READ);
 
+        // Sovereign Disk Partition Endpoints
+        self.add_endpoint(edps_drives_id, "ata0p1", 7, RIGHTS_READ); // System partition (Read-Only)
+        self.add_endpoint(edps_drives_id, "ata0p2", 7, RIGHTS_WRITE | RIGHTS_READ); // Continual VaultStore partition
+
         self.initialized = true;
 
         // Mount persistent disk nodes if present
         self.mount_disk();
     }
 
-    /// Mounts dynamic files from persistent ATA disk
+    /// Mounts dynamic files from persistent ATA disk (Supports CapObject VaultStore & Legacy Superblock)
     pub fn mount_disk(&mut self) {
+        let storage_handle = ((1u64) << 32) | (ROOT_SLOT_STORAGE as u64);
+
+        // 1. Try mounting sovereign CapObject VaultSuperblock at ata0p2 partition start
+        let mut vault_sb = VaultSuperblock {
+            magic: 0,
+            generation: 0,
+            entry_count: 0,
+            bitmap_lba: 0,
+            data_start_lba: 0,
+            total_sectors: 0,
+            entries: [CapObjectEntry::default(); 4],
+            _reserved: [0; 16],
+        };
+        let vsb_ptr = &mut vault_sb as *mut VaultSuperblock as *mut u8;
+        let ret = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, PARTITION_DATA_START_LBA as u64, vsb_ptr as u64) };
+
+        if ret == 0 && vault_sb.magic == VAULT_MAGIC {
+            let count = core::cmp::min(vault_sb.entry_count as usize, 4);
+            for i in 0..count {
+                let ent = &vault_sb.entries[i];
+                if ent.data_len == 0 || ent.extent_count == 0 { continue; }
+
+                let mut data_buf = [0u8; 1024];
+                let mut bytes_loaded = 0usize;
+
+                for e_idx in 0..(core::cmp::min(ent.extent_count as usize, MAX_EXTENTS)) {
+                    let ext = &ent.extents[e_idx];
+                    for s in 0..ext.sector_count {
+                        if bytes_loaded >= 1024 { break; }
+                        let dest_ptr = unsafe { data_buf.as_mut_ptr().add(bytes_loaded) };
+                        let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, (ext.start_lba + s) as u64, dest_ptr as u64) };
+                        bytes_loaded += 512;
+                    }
+                }
+
+                let dlen = core::cmp::min(ent.data_len as usize, 1024);
+                let name_len = ent.name.iter().position(|&c| c == 0).unwrap_or(32);
+                if let Ok(name_str) = core::str::from_utf8(&ent.name[..name_len]) {
+                    let target_map = if ent.parent_map < (MAX_NODES as u32) && self.nodes[ent.parent_map as usize].in_use {
+                        ent.parent_map as usize
+                    } else if let Some(vr) = self.lookup(0, "vaults/root") {
+                        vr.target_id
+                    } else {
+                        0
+                    };
+                    let _ = self.write_file_no_sync(target_map, name_str, &data_buf[..dlen]);
+                }
+            }
+            return;
+        }
+
+        // 2. Fallback / Migration: Check legacy prototype superblock at LBA 0
         let mut sb = DiskSuperblock {
             magic: 0,
             entry_count: 0,
@@ -232,13 +376,9 @@ impl CapGraph {
             _reserved: [0; 112],
         };
         let sb_ptr = &mut sb as *mut DiskSuperblock as *mut u8;
-        let storage_handle = ((1u64) << 32) | (ROOT_SLOT_STORAGE as u64);
-        let ret = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, 0, sb_ptr as u64) };
-        if ret != 0 {
-            return;
-        }
+        let ret_leg = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, 0, sb_ptr as u64) };
 
-        if sb.magic == 0x4158494F4D5F4653 {
+        if ret_leg == 0 && sb.magic == 0x4158494F4D5F4653 {
             let count = core::cmp::min(sb.entry_count as usize, 8);
             for i in 0..count {
                 let ent = &sb.entries[i];
@@ -264,47 +404,63 @@ impl CapGraph {
                     let _ = self.write_file_no_sync(target_map, name_str, &data_buf[..dlen]);
                 }
             }
-        } else {
-            // First time boot on clean disk: write blank superblock
-            sb.magic = 0x4158494F4D5F4653;
-            sb.entry_count = 0;
-            let sb_write_ptr = &sb as *const DiskSuperblock as *const u8;
-            let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, 0, sb_write_ptr as u64) };
         }
     }
 
-    /// Flushes all dynamic files to persistent ATA disk
+    /// Flushes dynamic files to persistent CapObject VaultStore on partition ata0p2 with CoW generation tracking
     pub fn sync_disk(&mut self) -> Result<(), &'static str> {
         let storage_handle = ((1u64) << 32) | (ROOT_SLOT_STORAGE as u64);
-        let mut sb = DiskSuperblock {
-            magic: 0x4158494F4D5F4653,
+
+        // Read current superblock to advance generation
+        let mut current_gen = 0u64;
+        let mut cur_sb = VaultSuperblock {
+            magic: 0,
+            generation: 0,
             entry_count: 0,
-            _pad: 0,
-            entries: [DiskFileEntry {
-                name: [0; 32],
-                parent_map: 0,
-                data_len: 0,
-                start_lba: 0,
-                sector_count: 0,
-            }; 8],
-            _reserved: [0; 112],
+            bitmap_lba: 0,
+            data_start_lba: 0,
+            total_sectors: 0,
+            entries: [CapObjectEntry::default(); 4],
+            _reserved: [0; 16],
+        };
+        let cur_sb_ptr = &mut cur_sb as *mut VaultSuperblock as *mut u8;
+        if unsafe { invoke_short(storage_handle, OP_STORAGE_READ, PARTITION_DATA_START_LBA as u64, cur_sb_ptr as u64) } == 0 {
+            if cur_sb.magic == VAULT_MAGIC {
+                current_gen = cur_sb.generation;
+            }
+        }
+
+        let mut vault_sb = VaultSuperblock {
+            magic: VAULT_MAGIC,
+            generation: current_gen + 1,
+            entry_count: 0,
+            bitmap_lba: PARTITION_DATA_START_LBA + 1,
+            data_start_lba: PARTITION_DATA_START_LBA + 8,
+            total_sectors: 22495,
+            entries: [CapObjectEntry::default(); 4],
+            _reserved: [0; 16],
         };
 
         let mut file_idx = 0;
+        let mut alloc_lba_offset = 0u32;
+
         for node_id in 0..MAX_NODES {
             if self.nodes[node_id].in_use && self.nodes[node_id].kind == GraphObjectKind::DirectoryMap {
                 for link in self.nodes[node_id].entries.iter() {
-                    if link.in_use && file_idx < 8 {
+                    if link.in_use && file_idx < 4 {
                         let target = &self.nodes[link.token.target_id];
                         if target.in_use && target.kind == GraphObjectKind::Blob && target.is_dynamic {
-                            let start_lba = 1 + (file_idx as u32) * 2;
                             let sec_count = if target.data_len > 512 { 2 } else { 1 };
+                            let start_lba = vault_sb.data_start_lba + alloc_lba_offset;
+                            alloc_lba_offset += sec_count;
 
+                            // Write first 512 bytes
                             let mut sbuf = [0u8; 512];
                             let c1 = core::cmp::min(target.data_len, 512);
                             sbuf[..c1].copy_from_slice(&target.dynamic_buf[..c1]);
                             let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, start_lba as u64, sbuf.as_ptr() as u64) };
 
+                            // Write second 512 bytes if extent spans 2 sectors
                             if sec_count > 1 {
                                 let mut sbuf2 = [0u8; 512];
                                 let c2 = target.data_len - 512;
@@ -312,12 +468,16 @@ impl CapGraph {
                                 let _ = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, (start_lba + 1) as u64, sbuf2.as_ptr() as u64) };
                             }
 
-                            let ent = &mut sb.entries[file_idx];
+                            let ent = &mut vault_sb.entries[file_idx];
                             ent.name[..link.name_len].copy_from_slice(&link.name[..link.name_len]);
                             ent.parent_map = node_id as u32;
                             ent.data_len = target.data_len as u32;
-                            ent.start_lba = start_lba;
-                            ent.sector_count = sec_count;
+                            ent.extent_count = 1;
+                            ent.extents[0] = ExtentRun {
+                                start_lba,
+                                sector_count: sec_count,
+                            };
+                            ent.rights = link.token.rights;
 
                             file_idx += 1;
                         }
@@ -326,13 +486,15 @@ impl CapGraph {
             }
         }
 
-        sb.entry_count = file_idx as u32;
-        let sb_ptr = &sb as *const DiskSuperblock as *const u8;
-        let ret = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, 0, sb_ptr as u64) };
+        vault_sb.entry_count = file_idx as u32;
+        let sb_ptr = &vault_sb as *const VaultSuperblock as *const u8;
+
+        // Atomic Root Generation Commit to ata0p2 superblock (LBA 10240)
+        let ret = unsafe { invoke_short(storage_handle, OP_STORAGE_WRITE, PARTITION_DATA_START_LBA as u64, sb_ptr as u64) };
         if ret == 0 {
             Ok(())
         } else {
-            Err("Disk write failed")
+            Err("VaultStore write failed")
         }
     }
 
@@ -429,6 +591,20 @@ impl CapGraph {
             return Some(CapToken { target_id: start_map_id, rights: RIGHTS_ALL });
         }
 
+        // Try lookup starting from start_map_id
+        if let Some(token) = self.lookup_internal(start_map_id, trimmed) {
+            return Some(token);
+        }
+
+        // If start_map_id != 0 and path has no leading dot, fallback to root node 0
+        if start_map_id != 0 && !path.starts_with('.') {
+            return self.lookup_internal(0, trimmed);
+        }
+
+        None
+    }
+
+    fn lookup_internal(&self, start_map_id: usize, trimmed: &str) -> Option<CapToken> {
         let mut current_map = start_map_id;
 
         for part in trimmed.split('/') {

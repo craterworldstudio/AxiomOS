@@ -47,9 +47,11 @@ unsafe fn wait_drq() -> Result<u8, ()> {
     Err(())
 }
 
+pub const MAX_LBA28: u32 = 0x0FFFFFFF; // 28-bit LBA upper limit (128 GiB)
+
 /// Reads a 512-byte sector from ATA disk using 28-bit LBA addressing
 pub unsafe fn read_sector(drive: u8, lba: u32, buf: *mut u8) -> Result<(), ()> {
-    if buf.is_null() {
+    if buf.is_null() || lba > MAX_LBA28 {
         return Err(());
     }
 
@@ -86,7 +88,7 @@ pub unsafe fn read_sector(drive: u8, lba: u32, buf: *mut u8) -> Result<(), ()> {
 
 /// Writes a 512-byte sector to ATA disk using 28-bit LBA addressing
 pub unsafe fn write_sector(drive: u8, lba: u32, buf: *const u8) -> Result<(), ()> {
-    if buf.is_null() {
+    if buf.is_null() || lba > MAX_LBA28 {
         return Err(());
     }
 

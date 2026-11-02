@@ -81,8 +81,8 @@ if [ "$BIOS_MODE" -eq 0 ]; then
 
     DATA_IMG="target/axiom_data.img"
     if [ ! -f "$DATA_IMG" ]; then
-        echo "[BUILD] Forging 16MB Sovereign Persistent Data Disk ($DATA_IMG)..."
-        dd if=/dev/zero of="$DATA_IMG" bs=1M count=16 status=none
+        echo "[BUILD] Forging 16MB Sovereign Partitioned Data Disk (GPT: ata0p1, ata0p2)..."
+        python3 tools/make_gpt_disk.py "$DATA_IMG"
     fi
 
     echo "[OK] Axiom UEFI Image forged successfully ($UEFI_IMG)."
