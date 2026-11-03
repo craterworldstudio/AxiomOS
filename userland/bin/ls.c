@@ -49,25 +49,38 @@ static void print_size(uint32_t bytes, int human) {
 }
 
 static void print_long_entry(const char* name, uint32_t is_dir, uint32_t data_len, uint8_t rights, int opt_h) {
-    char mode[11];
-    mode[0] = (is_dir == 1) ? 'd' : ((is_dir == 2) ? 'c' : '-');
-    mode[1] = (rights & RIGHTS_READ) ? 'r' : '-';
-    mode[2] = (rights & RIGHTS_WRITE) ? 'w' : '-';
-    mode[3] = (rights & RIGHTS_EXEC) ? 'x' : '-';
-    mode[4] = (rights & RIGHTS_READ) ? 'r' : '-';
-    mode[5] = '-';
-    mode[6] = (rights & RIGHTS_EXEC) ? 'x' : '-';
-    mode[7] = (rights & RIGHTS_READ) ? 'r' : '-';
-    mode[8] = '-';
-    mode[9] = '-';
-    mode[10] = '\0';
+    // 1. CapObject Kind Badge (MAP, EDP, OBJ)
+    if (is_dir == 1) {
+        axiom_set_color(COLOR_CYAN, 0x00101418); // Electric Cyan
+        axiom_print("MAP  ");
+    } else if (is_dir == 2) {
+        axiom_set_color(COLOR_GOLD, 0x00101418); // Gold Yellow
+        axiom_print("EDP  ");
+    } else {
+        axiom_set_color(COLOR_SILVER, 0x00101418); // Crisp Silver
+        axiom_print("OBJ  ");
+    }
 
-    axiom_set_color(COLOR_SILVER, 0x00101418);
-    axiom_print(mode);
+    // 2. Sovereign Capability Rights Attenuation Bracket: <RWXG>
+    char rights_buf[7];
+    rights_buf[0] = '<';
+    rights_buf[1] = (rights & RIGHTS_READ)  ? 'R' : '-';
+    rights_buf[2] = (rights & RIGHTS_WRITE) ? 'W' : '-';
+    rights_buf[3] = (rights & RIGHTS_EXEC)  ? 'X' : '-';
+    rights_buf[4] = (rights & RIGHTS_GRANT) ? 'G' : '-';
+    rights_buf[5] = '>';
+    rights_buf[6] = '\0';
+
+    axiom_set_color(COLOR_EMERALD, 0x00101418); // Sovereign Emerald
+    axiom_print(rights_buf);
     axiom_print(" ");
-    print_size(data_len, opt_h);
-    axiom_print("  ");
 
+    // 3. Object Extent Size
+    axiom_set_color(COLOR_SILVER, 0x00101418);
+    print_size(data_len, opt_h);
+    axiom_print("   ");
+
+    // 4. Object Name with CapGraph Type Indicator
     if (is_dir == 1) {
         axiom_set_color(COLOR_CYAN, 0x00101418); // Electric Cyan
         axiom_print(name);
@@ -115,7 +128,7 @@ int main(int argc, char** argv, CapKeyring* keyring) {
         axiom_println("List capability map entries, file blobs, and hardware endpoints.");
         axiom_println("Options:");
         axiom_println("  -a, --all         Do not ignore entries starting with . (includes . and ..)");
-        axiom_println("  -l                Use a long listing format (permissions, size, type)");
+        axiom_println("  -l                Use Sovereign CapObject listing format (<RWXG>, kind, size)");
         axiom_println("  -h, --human       Print human-readable sizes (with -l) or help");
         axiom_println("  --help            Show this command reference manual");
         return 0;
