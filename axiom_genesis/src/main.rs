@@ -552,7 +552,19 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
 
     // Determine target map for directory listings
     let target_map_id = if cmd == "ls" && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
-        if let Some(token) = graph.lookup(*current_map, exec_args) {
+        if exec_args == ".." {
+            let mut parent_id = 0;
+            if let Ok(cur_str) = core::str::from_utf8(&cwd[..*cwd_len]) {
+                let trimmed = cur_str.trim_matches('/');
+                if let Some(last_slash) = trimmed.rfind('/') {
+                    let parent_str = &trimmed[..last_slash];
+                    if let Some(token) = graph.lookup(0, parent_str) {
+                        parent_id = token.target_id;
+                    }
+                }
+            }
+            parent_id
+        } else if let Some(token) = graph.lookup(*current_map, exec_args) {
             if graph.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap {
                 token.target_id
             } else {

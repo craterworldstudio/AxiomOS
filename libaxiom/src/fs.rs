@@ -298,14 +298,87 @@ impl CapGraph {
         self.add_endpoint(edps_id, "console", 5, RIGHTS_WRITE | RIGHTS_READ);
         self.add_endpoint(edps_drives_id, "ata0", 7, RIGHTS_WRITE | RIGHTS_READ);
 
-        // Sovereign Disk Partition Endpoints
-        self.add_endpoint(edps_drives_id, "ata0p1", 7, RIGHTS_READ); // System partition (Read-Only)
-        self.add_endpoint(edps_drives_id, "ata0p2", 7, RIGHTS_WRITE | RIGHTS_READ); // Continual VaultStore partition
-
         self.initialized = true;
+
+        // Dynamically probe disk partition tables (GPT / MBR) on edps/drives/ata0
+        self.probe_partitions(edps_drives_id);
 
         // Mount persistent disk nodes if present
         self.mount_disk();
+    }
+
+    /// Dynamically inspects disk LBA 0 (MBR) and LBA 1..33 (GPT) to register partition endpoints
+    pub fn probe_partitions(&mut self, drives_map_id: usize) {
+        let storage_handle = ((1u64) << 32) | (ROOT_SLOT_STORAGE as u64);
+        let mut sector_buf = [0u8; 512];
+        let buf_ptr = sector_buf.as_mut_ptr();
+
+        // 1. Read LBA 1 to probe for GPT Partition Table
+        let ret_gpt = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, 1, buf_ptr as u64) };
+        if ret_gpt == 0 && &sector_buf[0..8] == b"EFI PART" {
+            // Valid GPT Header found! Read partition entries at LBA 2
+            let mut entries_buf = [0u8; 512];
+            let ent_ptr = entries_buf.as_mut_ptr();
+            let ret_ent = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, 2, ent_ptr as u64) };
+            if ret_ent == 0 {
+                // Parse up to 4 GPT partition entries from the first entry sector
+                for p_idx in 0..4 {
+                    let offset = p_idx * 128;
+                    let type_guid = &entries_buf[offset..offset + 16];
+                    let is_empty = type_guid.iter().all(|&b| b == 0);
+                    if !is_empty {
+                        let mut name_buf = [0u8; 16];
+                        let mut nlen = 0;
+                        for c in 0..8 {
+                            let ch = entries_buf[offset + 56 + c * 2];
+                            if ch == 0 { break; }
+                            name_buf[nlen] = ch;
+                            nlen += 1;
+                        }
+                        if nlen > 0 {
+                            if let Ok(pname) = core::str::from_utf8(&name_buf[..nlen]) {
+                                self.add_endpoint(drives_map_id, pname, 7, RIGHTS_WRITE | RIGHTS_READ);
+                            }
+                        } else {
+                            match p_idx {
+                                0 => { self.add_endpoint(drives_map_id, "ata0p1", 7, RIGHTS_READ); },
+                                1 => { self.add_endpoint(drives_map_id, "ata0p2", 7, RIGHTS_WRITE | RIGHTS_READ); },
+                                2 => { self.add_endpoint(drives_map_id, "ata0p3", 7, RIGHTS_WRITE | RIGHTS_READ); },
+                                _ => { self.add_endpoint(drives_map_id, "ata0p4", 7, RIGHTS_WRITE | RIGHTS_READ); },
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
+        // 2. Fallback: Read LBA 0 to probe for legacy MBR / DOS Partition Table (Standard USB Flash Drives)
+        let ret_mbr = unsafe { invoke_short(storage_handle, OP_STORAGE_READ, 0, buf_ptr as u64) };
+        if ret_mbr == 0 && sector_buf[510] == 0x55 && sector_buf[511] == 0xAA {
+            let mut found_any = false;
+            for p_idx in 0..4 {
+                let p_offset = 446 + p_idx * 16;
+                let part_type = sector_buf[p_offset + 4];
+                // Type != 0x00 (empty) and != 0xEE (protective GPT, which would have matched above)
+                if part_type != 0x00 && part_type != 0xEE {
+                    let mut name_buf = [0u8; 8];
+                    name_buf[0] = b'a'; name_buf[1] = b't'; name_buf[2] = b'a'; name_buf[3] = b'0';
+                    name_buf[4] = b'p'; name_buf[5] = b'1' + (p_idx as u8);
+                    if let Ok(pname) = core::str::from_utf8(&name_buf[..6]) {
+                        self.add_endpoint(drives_map_id, pname, 7, RIGHTS_WRITE | RIGHTS_READ);
+                        found_any = true;
+                    }
+                }
+            }
+            if found_any {
+                return;
+            }
+        }
+
+        // 3. Fallback: If unpartitioned, register default partition slices
+        self.add_endpoint(drives_map_id, "ata0p1", 7, RIGHTS_READ);
+        self.add_endpoint(drives_map_id, "ata0p2", 7, RIGHTS_WRITE | RIGHTS_READ);
     }
 
     /// Mounts dynamic files from persistent ATA disk (Supports CapObject VaultStore & Legacy Superblock)
