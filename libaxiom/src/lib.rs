@@ -22,7 +22,7 @@ pub use capability::{CapHandle, Rights, ObjectKind, EndpointCap, CNodeCap};
 pub use ipc::{rpc_call, ipc_send, ipc_recv};
 pub use allocator::BumpAllocator;
 pub use console::{ConsoleWriter, ConsoleReader};
-pub use fs::{CapGraph, GRAPH, CapToken, MapLink, GraphObjectKind};
+pub use fs::{CapGraph, GRAPH, CapToken, MapLink, GraphObjectKind, resolve_path};
 
 // ============================================================================
 // ROOT CAPABILITY SLOTS (Genesis Process CSpace Initial Layout)

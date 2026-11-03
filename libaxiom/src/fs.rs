@@ -717,7 +717,6 @@ impl CapGraph {
         self.link_to_map(parent_map_id, name, CapToken { target_id: new_id, rights });
         new_id
     }
-
     /// Relative graph lookup: starts from `start_map_id` and traverses path tokens
     pub fn lookup(&self, start_map_id: usize, path: &str) -> Option<CapToken> {
         let trimmed = path.trim_matches('/');
@@ -928,3 +927,75 @@ impl CapGraph {
         Err("Ledger buffer full")
     }
 }
+
+/// Canonicalizes a relative or step-back path against a working directory.
+/// Supports multi-level step-backs (`../../`), explicit local paths (`./`),
+/// root navigation (`/`), and vault home navigation (`~`).
+pub fn resolve_path(cwd: &str, input_path: &str) -> ([u8; 64], usize) {
+    let mut segments: [&str; 8] = [""; 8];
+    let mut seg_count = 0;
+
+    let trimmed_input = input_path.trim();
+    let (is_absolute, path_to_process) = if trimmed_input == "~" {
+        (true, "vaults/root")
+    } else if trimmed_input.starts_with("~/") {
+        (true, &trimmed_input[2..])
+    } else if trimmed_input.starts_with('/') {
+        (true, trimmed_input)
+    } else {
+        (false, trimmed_input)
+    };
+
+    if trimmed_input.starts_with("~/") {
+        segments[0] = "vaults";
+        segments[1] = "root";
+        seg_count = 2;
+    } else if !is_absolute {
+        for seg in cwd.split('/') {
+            let s = seg.trim();
+            if !s.is_empty() && s != "." {
+                if seg_count < 8 {
+                    segments[seg_count] = s;
+                    seg_count += 1;
+                }
+            }
+        }
+    }
+
+    for seg in path_to_process.split('/') {
+        let s = seg.trim();
+        if s.is_empty() || s == "." {
+            continue;
+        } else if s == ".." {
+            if seg_count > 0 {
+                seg_count -= 1;
+            }
+        } else {
+            if seg_count < 8 {
+                segments[seg_count] = s;
+                seg_count += 1;
+            }
+        }
+    }
+
+    let mut out = [0u8; 64];
+    let mut out_len = 0;
+    if seg_count == 0 {
+        out[0] = b'/';
+        return (out, 1);
+    }
+
+    for (i, seg) in segments[..seg_count].iter().enumerate() {
+        if i > 0 && out_len < 63 {
+            out[out_len] = b'/';
+            out_len += 1;
+        }
+        let b = seg.as_bytes();
+        let copy_len = core::cmp::min(b.len(), 63 - out_len);
+        out[out_len..out_len + copy_len].copy_from_slice(&b[..copy_len]);
+        out_len += copy_len;
+    }
+
+    (out, out_len)
+}
+

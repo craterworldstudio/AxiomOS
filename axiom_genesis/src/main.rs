@@ -326,93 +326,24 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 println!("Change current working capability directory map.");
                 println!("Options:");
                 println!("  -h, --help    Show this command reference manual");
-                println!("  ..            Move up one directory level");
+                println!("  ..            Move up one directory level (supports multi-level ../..)");
                 println!("  ~             Navigate to root vault (vaults/root)");
                 return;
             }
-            if arg_str.is_empty() || arg_str == "~" {
-                if let Some(vr) = unsafe { GRAPH.lookup(0, "vaults/root") } {
-                    *current_map = vr.target_id;
-                    let vrb = b"vaults/root";
-                    cwd[..vrb.len()].copy_from_slice(vrb);
-                    *cwd_len = vrb.len();
-                } else {
-                    *current_map = 0;
-                    cwd[0] = b'/';
-                    *cwd_len = 1;
-                }
-            } else if arg_str == "/" {
+            let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
+            let target_input = if arg_str.is_empty() { "~" } else { arg_str };
+            let (res_buf, res_len) = resolve_path(cur_str, target_input);
+            let res_str = core::str::from_utf8(&res_buf[..res_len]).unwrap_or("/");
+
+            if res_str == "/" {
                 *current_map = 0;
                 cwd[0] = b'/';
                 *cwd_len = 1;
-            } else if arg_str == ".." {
-                let mut parent_buf = [0u8; 64];
-                let mut parent_len = 0;
-                let mut is_single_depth = false;
-                let mut found_parent = false;
-
-                if let Ok(cur_str) = core::str::from_utf8(&cwd[..*cwd_len]) {
-                    let trimmed = cur_str.trim_matches('/');
-                    if let Some(last_slash) = trimmed.rfind('/') {
-                        let p = &trimmed[..last_slash];
-                        let pb = p.as_bytes();
-                        parent_len = core::cmp::min(pb.len(), 63);
-                        parent_buf[..parent_len].copy_from_slice(&pb[..parent_len]);
-                        found_parent = true;
-                    } else if !trimmed.is_empty() {
-                        is_single_depth = true;
-                    }
-                }
-
-                if found_parent {
-                    if let Ok(p_str) = core::str::from_utf8(&parent_buf[..parent_len]) {
-                        if let Some(token) = unsafe { GRAPH.lookup(0, p_str) } {
-                            *current_map = token.target_id;
-                            cwd[..parent_len].copy_from_slice(&parent_buf[..parent_len]);
-                            *cwd_len = parent_len;
-                        } else {
-                            *current_map = 0;
-                            cwd[0] = b'/';
-                            *cwd_len = 1;
-                        }
-                    }
-                } else if is_single_depth {
-                    *current_map = 0;
-                    cwd[0] = b'/';
-                    *cwd_len = 1;
-                }
-            } else if arg_str.starts_with('/') {
-                let clean = arg_str.trim_matches('/');
-                if clean.is_empty() {
-                    *current_map = 0;
-                    cwd[0] = b'/';
-                    *cwd_len = 1;
-                } else if let Some(token) = unsafe { GRAPH.lookup(0, clean) } {
-                    if unsafe { GRAPH.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap } {
-                        *current_map = token.target_id;
-                        let clen = core::cmp::min(clean.len(), 62);
-                        cwd[..clen].copy_from_slice(&clean.as_bytes()[..clen]);
-                        *cwd_len = clen;
-                    } else {
-                        println!("cd: {}: Not a directory", arg_str);
-                    }
-                } else {
-                    println!("cd: {}: No such file or directory", arg_str);
-                }
-            } else if let Some(token) = unsafe { GRAPH.lookup(*current_map, arg_str) } {
+            } else if let Some(token) = unsafe { GRAPH.lookup(0, res_str) } {
                 if unsafe { GRAPH.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap } {
                     *current_map = token.target_id;
-                    let clean = arg_str.trim_matches('/');
-                    if *cwd_len == 1 && cwd[0] == b'/' {
-                        let clen = core::cmp::min(clean.len(), 62);
-                        cwd[..clen].copy_from_slice(&clean.as_bytes()[..clen]);
-                        *cwd_len = clen;
-                    } else if *cwd_len < 60 {
-                        cwd[*cwd_len] = b'/';
-                        let clen = core::cmp::min(clean.len(), 62 - *cwd_len - 1);
-                        cwd[*cwd_len + 1..*cwd_len + 1 + clen].copy_from_slice(&clean.as_bytes()[..clen]);
-                        *cwd_len += 1 + clen;
-                    }
+                    cwd[..res_len].copy_from_slice(&res_buf[..res_len]);
+                    *cwd_len = res_len;
                 } else {
                     println!("cd: {}: Not a directory", arg_str);
                 }
@@ -542,38 +473,50 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             file_data[..flen].copy_from_slice(&tb[..flen]);
             file_data[flen] = b'\n';
 
-            if let Err(e) = graph.write_file(*current_map, fname, &file_data[..flen + 1]) {
-                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
-                println!("echo: {}: {}", fname, e);
+            let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
+            let (res_buf, res_len) = resolve_path(cur_str, fname);
+            if let Ok(res_str) = core::str::from_utf8(&res_buf[..res_len]) {
+                if let Err(e) = graph.write_file(0, res_str, &file_data[..flen + 1]) {
+                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                    println!("echo: {}: {}", fname, e);
+                }
             }
             return;
         }
     }
 
     // Determine target map for directory listings
-    let target_map_id = if cmd == "ls" && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
-        if exec_args == ".." {
-            let mut parent_id = 0;
-            if let Ok(cur_str) = core::str::from_utf8(&cwd[..*cwd_len]) {
-                let trimmed = cur_str.trim_matches('/');
-                if let Some(last_slash) = trimmed.rfind('/') {
-                    let parent_str = &trimmed[..last_slash];
-                    if let Some(token) = graph.lookup(0, parent_str) {
-                        parent_id = token.target_id;
-                    }
+    let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
+    let mut ls_path: Option<&str> = None;
+    let mut is_help_flag = false;
+
+    for token in exec_args.split_whitespace() {
+        if token == "-h" || token == "--help" || token == "-dh" {
+            is_help_flag = true;
+        } else if !token.starts_with('-') {
+            ls_path = Some(token);
+        }
+    }
+
+    let target_map_id = if cmd == "ls" && !is_help_flag {
+        if let Some(path_arg) = ls_path {
+            let (res_buf, res_len) = resolve_path(cur_str, path_arg);
+            let res_str = core::str::from_utf8(&res_buf[..res_len]).unwrap_or("/");
+            if res_str == "/" {
+                0
+            } else if let Some(token) = graph.lookup(0, res_str) {
+                if graph.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap {
+                    token.target_id
+                } else {
+                    println!("ls: cannot access '{}': Not a directory", path_arg);
+                    return;
                 }
-            }
-            parent_id
-        } else if let Some(token) = graph.lookup(*current_map, exec_args) {
-            if graph.nodes[token.target_id].kind == GraphObjectKind::DirectoryMap {
-                token.target_id
             } else {
-                println!("ls: cannot access '{}': Not a directory", exec_args);
+                println!("ls: cannot access '{}': No such file or directory", path_arg);
                 return;
             }
         } else {
-            println!("ls: cannot access '{}': No such file or directory", exec_args);
-            return;
+            *current_map
         }
     } else {
         *current_map
@@ -718,46 +661,61 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         unsafe {
             BLOB_CTX.length = 0;
             BLOB_CTX.modified = 0;
-            if let Some(target_token) = graph.lookup(*current_map, exec_args) {
-                let target = &graph.nodes[target_token.target_id];
-                if target.kind == GraphObjectKind::Blob && target.data_len > 0 {
-                    let clen = core::cmp::min(target.data_len, 1024);
-                    core::ptr::copy_nonoverlapping(target.data_ptr, BLOB_CTX.data.as_mut_ptr(), clen);
-                    BLOB_CTX.length = clen as u32;
-                } else if target.kind == GraphObjectKind::DeviceEndpoint {
-                    if cmd == "axe" {
-                        println!("axe: cannot edit capability endpoint '{}'", exec_args);
-                        return;
-                    }
-                    if target.data_len > 0 && !target.data_ptr.is_null() {
+
+            let mut file_arg: Option<&str> = None;
+            for token in exec_args.split_whitespace() {
+                if !token.starts_with('-') {
+                    file_arg = Some(token);
+                    break;
+                }
+            }
+
+            if let Some(fpath) = file_arg {
+                let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
+                let (res_buf, res_len) = resolve_path(cur_str, fpath);
+                let res_str = core::str::from_utf8(&res_buf[..res_len]).unwrap_or("");
+
+                if let Some(target_token) = graph.lookup(0, res_str) {
+                    let target = &graph.nodes[target_token.target_id];
+                    if target.kind == GraphObjectKind::Blob && target.data_len > 0 {
                         let clen = core::cmp::min(target.data_len, 1024);
                         core::ptr::copy_nonoverlapping(target.data_ptr, BLOB_CTX.data.as_mut_ptr(), clen);
                         BLOB_CTX.length = clen as u32;
-                    } else {
-                        let slot = target.data_len;
-                        let desc: &[u8] = if exec_args.ends_with("ata0p1") {
-                            b"[CAPABILITY ENDPOINT: System Substrate Partition Slice (ata0p1)]\nRange: LBA 2048..10239 (4 MB, Read-Only)\nOperations: OP_STORAGE_READ(20)\n"
-                        } else if exec_args.ends_with("ata0p2") {
-                            b"[CAPABILITY ENDPOINT: Continual VaultStore Partition Slice (ata0p2)]\nRange: LBA 10240..32734 (11.5 MB, Read/Write)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nFormat: Sovereign CapObjects (CoW Generation Monotonic Extents)\n"
+                    } else if target.kind == GraphObjectKind::DeviceEndpoint {
+                        if cmd == "axe" {
+                            println!("axe: cannot edit capability endpoint '{}'", fpath);
+                            return;
+                        }
+                        if target.data_len > 0 && !target.data_ptr.is_null() {
+                            let clen = core::cmp::min(target.data_len, 1024);
+                            core::ptr::copy_nonoverlapping(target.data_ptr, BLOB_CTX.data.as_mut_ptr(), clen);
+                            BLOB_CTX.length = clen as u32;
                         } else {
-                            match slot {
-                                5 => b"[CAPABILITY ENDPOINT: Console Video & Framebuffer Subsystem (Slot 5)]\nOperations: OP_CONSOLE_WRITE(6), CLEAR(7), BANNER(8), COLOR(9), GETCHAR(10), SET_CURSOR(11)\nChannels: Framebuffer (1280x720 32bpp) & PS/2 Keyboard Input\n",
-                                7 => b"[CAPABILITY ENDPOINT: Primary ATA PIO Storage Controller (Slot 7 / ata0)]\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nChannels: IDE Port 0x1F0..0x1F7 (512-byte raw sectors)\nPartition Scheme: UEFI GPT (Protective MBR)\n",
-                                _ => b"[CAPABILITY ENDPOINT: Hardware Device Interface]\n",
-                            }
-                        };
-                        let dlen = desc.len();
-                        BLOB_CTX.data[..dlen].copy_from_slice(desc);
-                        BLOB_CTX.length = dlen as u32;
+                            let slot = target.data_len;
+                            let desc: &[u8] = if res_str.ends_with("ata0p1") {
+                                b"[CAPABILITY ENDPOINT: System Substrate Partition Slice (ata0p1)]\nRange: LBA 2048..10239 (4 MB, Read-Only)\nOperations: OP_STORAGE_READ(20)\n"
+                            } else if res_str.ends_with("ata0p2") {
+                                b"[CAPABILITY ENDPOINT: Continual VaultStore Partition Slice (ata0p2)]\nRange: LBA 10240..32734 (11.5 MB, Read/Write)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nFormat: Sovereign CapObjects (CoW Generation Monotonic Extents)\n"
+                            } else {
+                                match slot {
+                                    5 => b"[CAPABILITY ENDPOINT: Console Video & Framebuffer Subsystem (Slot 5)]\nOperations: OP_CONSOLE_WRITE(6), CLEAR(7), BANNER(8), COLOR(9), GETCHAR(10), SET_CURSOR(11)\nChannels: Framebuffer (1280x720 32bpp) & PS/2 Keyboard Input\n",
+                                    7 => b"[CAPABILITY ENDPOINT: Primary ATA PIO Storage Controller (Slot 7 / ata0)]\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nChannels: IDE Port 0x1F0..0x1F7 (512-byte raw sectors)\nPartition Scheme: UEFI GPT (Protective MBR)\n",
+                                    _ => b"[CAPABILITY ENDPOINT: Hardware Device Interface]\n",
+                                }
+                            };
+                            let dlen = desc.len();
+                            BLOB_CTX.data[..dlen].copy_from_slice(desc);
+                            BLOB_CTX.length = dlen as u32;
+                        }
+                    } else if target.kind == GraphObjectKind::DirectoryMap {
+                        if cmd == "axe" {
+                            println!("axe: cannot edit directory map '{}'", fpath);
+                            return;
+                        }
+                        let msg = b"cat: Is a capability directory map (use 'ls' to view entries)\n";
+                        BLOB_CTX.data[..msg.len()].copy_from_slice(msg);
+                        BLOB_CTX.length = msg.len() as u32;
                     }
-                } else if target.kind == GraphObjectKind::DirectoryMap {
-                    if cmd == "axe" {
-                        println!("axe: cannot edit directory map '{}'", exec_args);
-                        return;
-                    }
-                    let msg = b"cat: Is a capability directory map (use 'ls' to view entries)\n";
-                    BLOB_CTX.data[..msg.len()].copy_from_slice(msg);
-                    BLOB_CTX.length = msg.len() as u32;
                 }
             }
             &raw mut BLOB_CTX as u64
@@ -784,34 +742,61 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     let cmd_b = cmd.as_bytes();
     arg0_buf[..cmd_b.len()].copy_from_slice(cmd_b);
 
-    let mut arg1_buf = [0u8; 128];
-    let arg_b = exec_args.as_bytes();
-    let alen = core::cmp::min(arg_b.len(), 127);
-    if alen > 0 {
-        arg1_buf[..alen].copy_from_slice(&arg_b[..alen]);
-    }
-
-    let mut argv_ptrs: [*const u8; 4] = [core::ptr::null(); 4];
+    let mut arg_bufs: [[u8; 64]; 8] = [[0u8; 64]; 8];
+    let mut argv_ptrs: [*const u8; 9] = [core::ptr::null(); 9];
     argv_ptrs[0] = arg0_buf.as_ptr();
-    let argc = if alen > 0 {
-        argv_ptrs[1] = arg1_buf.as_ptr();
-        2
-    } else {
-        1
-    };
+    let mut argc = 1;
+
+    let bytes = exec_args.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && argc < 8 {
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+
+        let start = i;
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let q = bytes[i];
+            i += 1;
+            while i < bytes.len() && bytes[i] != q {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1;
+            }
+        } else {
+            while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
+                i += 1;
+            }
+        }
+
+        let token_slice = &bytes[start..i];
+        let tlen = core::cmp::min(token_slice.len(), 63);
+        arg_bufs[argc - 1][..tlen].copy_from_slice(&token_slice[..tlen]);
+        arg_bufs[argc - 1][tlen] = 0;
+        argv_ptrs[argc] = arg_bufs[argc - 1].as_ptr();
+        argc += 1;
+    }
 
     // 8. Execute C / ASM binary at 0x500000
     let entry: extern "C" fn(i32, *const *const u8, *const CapKeyring) -> i32 =
         unsafe { core::mem::transmute(USER_EXEC_BASE as *const ()) };
 
-    let _ret = entry(argc, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
+    let _ret = entry(argc as i32, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
 
     // 9. If axe modified the buffer, flush writeback to CapGraph
     if cmd == "axe" && !exec_args.is_empty() && exec_args != "-dh" {
         unsafe {
             if BLOB_CTX.modified != 0 {
                 let len = core::cmp::min(BLOB_CTX.length as usize, 1024);
-                let _ = graph.write_file(*current_map, exec_args, &BLOB_CTX.data[..len]);
+                let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
+                let (res_buf, res_len) = resolve_path(cur_str, exec_args.trim());
+                if let Ok(res_str) = core::str::from_utf8(&res_buf[..res_len]) {
+                    let _ = graph.write_file(0, res_str, &BLOB_CTX.data[..len]);
+                }
             }
         }
     }

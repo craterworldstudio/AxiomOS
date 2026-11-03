@@ -1,53 +1,181 @@
 #include "../include/axiom.h"
 
+static void print_uint(uint32_t val, int min_width) {
+    char buf[16];
+    int idx = 0;
+    if (val == 0) {
+        buf[idx++] = '0';
+    } else {
+        char temp[16];
+        int t_idx = 0;
+        while (val > 0) {
+            temp[t_idx++] = (char)('0' + (val % 10));
+            val /= 10;
+        }
+        while (t_idx > 0) {
+            buf[idx++] = temp[--t_idx];
+        }
+    }
+    buf[idx] = '\0';
+    while (idx < min_width) {
+        axiom_print(" ");
+        min_width--;
+    }
+    axiom_print(buf);
+}
+
+static void print_human_size(uint32_t bytes) {
+    if (bytes < 1024) {
+        print_uint(bytes, 4);
+        axiom_print(" B");
+    } else if (bytes < 1024 * 1024) {
+        uint32_t kb = bytes / 1024;
+        print_uint(kb, 4);
+        axiom_print(" K");
+    } else {
+        uint32_t mb = bytes / (1024 * 1024);
+        print_uint(mb, 4);
+        axiom_print(" M");
+    }
+}
+
+static void print_size(uint32_t bytes, int human) {
+    if (human) {
+        print_human_size(bytes);
+    } else {
+        print_uint(bytes, 7);
+        axiom_print(" B");
+    }
+}
+
+static void print_long_entry(const char* name, uint32_t is_dir, uint32_t data_len, uint8_t rights, int opt_h) {
+    char mode[11];
+    mode[0] = (is_dir == 1) ? 'd' : ((is_dir == 2) ? 'c' : '-');
+    mode[1] = (rights & RIGHTS_READ) ? 'r' : '-';
+    mode[2] = (rights & RIGHTS_WRITE) ? 'w' : '-';
+    mode[3] = (rights & RIGHTS_EXEC) ? 'x' : '-';
+    mode[4] = (rights & RIGHTS_READ) ? 'r' : '-';
+    mode[5] = '-';
+    mode[6] = (rights & RIGHTS_EXEC) ? 'x' : '-';
+    mode[7] = (rights & RIGHTS_READ) ? 'r' : '-';
+    mode[8] = '-';
+    mode[9] = '-';
+    mode[10] = '\0';
+
+    axiom_set_color(COLOR_SILVER, 0x00101418);
+    axiom_print(mode);
+    axiom_print(" ");
+    print_size(data_len, opt_h);
+    axiom_print("  ");
+
+    if (is_dir == 1) {
+        axiom_set_color(COLOR_CYAN, 0x00101418); // Electric Cyan
+        axiom_print(name);
+        axiom_println("/");
+    } else if (is_dir == 2) {
+        axiom_set_color(COLOR_GOLD, 0x00101418); // Gold Yellow
+        axiom_print(name);
+        axiom_println("@");
+    } else {
+        axiom_set_color(COLOR_SILVER, 0x00101418); // Crisp Silver
+        axiom_println(name);
+    }
+}
+
 int main(int argc, char** argv, CapKeyring* keyring) {
-    if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+    int opt_l = 0;
+    int opt_a = 0;
+    int opt_h = 0;
+    int opt_help = 0;
+
+    for (int i = 1; i < argc; i++) {
+        const char* arg = argv[i];
+        if (strcmp(arg, "--help") == 0) {
+            opt_help = 1;
+        } else if (strcmp(arg, "-dh") == 0) {
+            axiom_println("  ls                   - list directory contents");
+            return 0;
+        } else if (strcmp(arg, "--all") == 0) {
+            opt_a = 1;
+        } else if (strcmp(arg, "--human") == 0) {
+            opt_h = 1;
+        } else if (arg[0] == '-' && arg[1] != '\0') {
+            for (int j = 1; arg[j] != '\0'; j++) {
+                if (arg[j] == 'l') opt_l = 1;
+                else if (arg[j] == 'a') opt_a = 1;
+                else if (arg[j] == 'h') opt_h = 1;
+            }
+        }
+    }
+
+    if (opt_help || (opt_h && !opt_l && !opt_a)) {
         axiom_set_color(COLOR_GOLD, 0x00101418);
-        axiom_println("Usage: ls [path] [options]");
+        axiom_println("Usage: ls [options] [path]");
         axiom_set_color(COLOR_SILVER, 0x00101418);
         axiom_println("List capability map entries, file blobs, and hardware endpoints.");
         axiom_println("Options:");
-        axiom_println("  -h, --help    Show this command reference manual");
+        axiom_println("  -a, --all         Do not ignore entries starting with . (includes . and ..)");
+        axiom_println("  -l                Use a long listing format (permissions, size, type)");
+        axiom_println("  -h, --human       Print human-readable sizes (with -l) or help");
+        axiom_println("  --help            Show this command reference manual");
         return 0;
     }
-    if (argc > 1 && strcmp(argv[1], "-dh") == 0) {
-        axiom_println("  ls                   - list directory contents");
-        return 0;
-    }
-    
+
     CapMapContext* map = (CapMapContext*)keyring->storage_cap;
     if (!map) {
         axiom_println("ls: cannot access directory");
         return 1;
     }
-    
+
     int printed = 0;
+
+    // Synthesize '.' and '..' if -a is enabled
+    if (opt_a) {
+        if (opt_l) {
+            print_long_entry(".", 1, 512, RIGHTS_ALL, opt_h);
+            print_long_entry("..", 1, 512, RIGHTS_ALL, opt_h);
+        } else {
+            axiom_set_color(COLOR_CYAN, 0x00101418);
+            axiom_print(".  ..  ");
+        }
+        printed += 2;
+    }
+
     for (uint32_t i = 0; i < map->count && i < 16; i++) {
         CapEntryInfo* ent = &map->entries[i];
         if (!ent->in_use) continue;
-        
-        if (ent->is_dir == 1) {
-            axiom_set_color(0x0000D2FF, 0x00101418); // Electric Cyan (Directory Map)
-            axiom_print(ent->name);
-            axiom_print("/  ");
-        } else if (ent->is_dir == 2) {
-            axiom_set_color(0x00FFD166, 0x00101418); // Gold Yellow (Capability Endpoint)
-            axiom_print(ent->name);
-            axiom_print("@  ");
+        if (!opt_a && ent->name[0] == '.') continue;
+
+        if (opt_l) {
+            print_long_entry(ent->name, ent->is_dir, ent->data_len, ent->rights, opt_h);
         } else {
-            axiom_set_color(0x00E0E0E0, 0x00101418); // Crisp Silver (File Blob)
-            axiom_print(ent->name);
-            axiom_print("  ");
+            if (ent->is_dir == 1) {
+                axiom_set_color(COLOR_CYAN, 0x00101418); // Electric Cyan (Directory Map)
+                axiom_print(ent->name);
+                axiom_print("/  ");
+            } else if (ent->is_dir == 2) {
+                axiom_set_color(COLOR_GOLD, 0x00101418); // Gold Yellow (Capability Endpoint)
+                axiom_print(ent->name);
+                axiom_print("@  ");
+            } else {
+                axiom_set_color(COLOR_SILVER, 0x00101418); // Crisp Silver (File Blob)
+                axiom_print(ent->name);
+                axiom_print("  ");
+            }
         }
         printed++;
     }
-    
-    if (printed > 0) {
-        axiom_println("");
-    } else {
+
+    if (!opt_l) {
+        if (printed > 0) {
+            axiom_println("");
+        } else {
+            axiom_println("(empty)");
+        }
+    } else if (printed == 0) {
         axiom_println("(empty)");
     }
-    
-    axiom_set_color(0x00E0E0E0, 0x00101418);
+
+    axiom_set_color(COLOR_SILVER, 0x00101418);
     return 0;
 }
