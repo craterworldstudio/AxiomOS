@@ -362,11 +362,53 @@ impl CapGraph {
                 let part_type = sector_buf[p_offset + 4];
                 // Type != 0x00 (empty) and != 0xEE (protective GPT, which would have matched above)
                 if part_type != 0x00 && part_type != 0xEE {
+                    let mut start_lba = 0u32;
+                    let mut sec_count = 0u32;
+                    start_lba |= sector_buf[p_offset + 8] as u32;
+                    start_lba |= (sector_buf[p_offset + 9] as u32) << 8;
+                    start_lba |= (sector_buf[p_offset + 10] as u32) << 16;
+                    start_lba |= (sector_buf[p_offset + 11] as u32) << 24;
+
+                    sec_count |= sector_buf[p_offset + 12] as u32;
+                    sec_count |= (sector_buf[p_offset + 13] as u32) << 8;
+                    sec_count |= (sector_buf[p_offset + 14] as u32) << 16;
+                    sec_count |= (sector_buf[p_offset + 15] as u32) << 24;
+
                     let mut name_buf = [0u8; 8];
                     name_buf[0] = b'a'; name_buf[1] = b't'; name_buf[2] = b'a'; name_buf[3] = b'0';
                     name_buf[4] = b'p'; name_buf[5] = b'1' + (p_idx as u8);
                     if let Ok(pname) = core::str::from_utf8(&name_buf[..6]) {
-                        self.add_endpoint(drives_map_id, pname, 7, RIGHTS_WRITE | RIGHTS_READ);
+                        let node_id = self.add_endpoint(drives_map_id, pname, 7, RIGHTS_WRITE | RIGHTS_READ);
+                        if node_id > 0 {
+                            // Populate endpoint descriptor with actual physical partition metrics
+                            let ep_node = &mut self.nodes[node_id];
+                            let mb_size = (sec_count as u64 * 512) / (1024 * 1024);
+                            let mut d_pos = 0;
+                            let pfx = b"[CAPABILITY ENDPOINT: Physical MBR Partition Slice (";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx.len()].copy_from_slice(pfx); d_pos += pfx.len();
+                            ep_node.dynamic_buf[d_pos..d_pos + 6].copy_from_slice(&name_buf[..6]); d_pos += 6;
+                            let pfx2 = b")]\nType: 0x";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx2.len()].copy_from_slice(pfx2); d_pos += pfx2.len();
+                            // hex byte
+                            let hex_chars = b"0123456789ABCDEF";
+                            ep_node.dynamic_buf[d_pos] = hex_chars[(part_type >> 4) as usize]; d_pos += 1;
+                            ep_node.dynamic_buf[d_pos] = hex_chars[(part_type & 0xF) as usize]; d_pos += 1;
+                            let pfx3 = b" | Start LBA: ";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx3.len()].copy_from_slice(pfx3); d_pos += pfx3.len();
+                            // write start_lba decimal
+                            d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], start_lba);
+                            let pfx4 = b" | Sectors: ";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx4.len()].copy_from_slice(pfx4); d_pos += pfx4.len();
+                            d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], sec_count);
+                            let pfx5 = b" (~";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx5.len()].copy_from_slice(pfx5); d_pos += pfx5.len();
+                            d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], mb_size as u32);
+                            let pfx6 = b" MB)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nPhysical Source: Attached USB / IDE Disk Medium\n";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx6.len()].copy_from_slice(pfx6); d_pos += pfx6.len();
+                            ep_node.data_ptr = ep_node.dynamic_buf.as_ptr();
+                            ep_node.data_len = d_pos;
+                            ep_node.is_dynamic = true;
+                        }
                         found_any = true;
                     }
                 }
@@ -580,6 +622,25 @@ impl CapGraph {
             }
         }
         0
+    }
+
+    pub fn write_u32_dec(buf: &mut [u8], mut val: u32) -> usize {
+        if val == 0 {
+            if !buf.is_empty() { buf[0] = b'0'; return 1; }
+            return 0;
+        }
+        let mut tmp = [0u8; 10];
+        let mut count = 0;
+        while val > 0 && count < 10 {
+            tmp[count] = b'0' + (val % 10) as u8;
+            val /= 10;
+            count += 1;
+        }
+        let n = core::cmp::min(count, buf.len());
+        for i in 0..n {
+            buf[i] = tmp[count - 1 - i];
+        }
+        n
     }
 
     /// Inserts a link into a Directory Map

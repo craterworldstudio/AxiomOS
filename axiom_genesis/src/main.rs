@@ -729,21 +729,27 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                         println!("axe: cannot edit capability endpoint '{}'", exec_args);
                         return;
                     }
-                    let slot = target.data_len;
-                    let desc: &[u8] = if exec_args.ends_with("ata0p1") {
-                        b"[CAPABILITY ENDPOINT: System Substrate Partition Slice (ata0p1)]\nRange: LBA 2048..10239 (4 MB, Read-Only)\nOperations: OP_STORAGE_READ(20)\n"
-                    } else if exec_args.ends_with("ata0p2") {
-                        b"[CAPABILITY ENDPOINT: Continual VaultStore Partition Slice (ata0p2)]\nRange: LBA 10240..32734 (11.5 MB, Read/Write)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nFormat: Sovereign CapObjects (CoW Generation Monotonic Extents)\n"
+                    if target.data_len > 0 && !target.data_ptr.is_null() {
+                        let clen = core::cmp::min(target.data_len, 1024);
+                        core::ptr::copy_nonoverlapping(target.data_ptr, BLOB_CTX.data.as_mut_ptr(), clen);
+                        BLOB_CTX.length = clen as u32;
                     } else {
-                        match slot {
-                            5 => b"[CAPABILITY ENDPOINT: Console Video & Framebuffer Subsystem (Slot 5)]\nOperations: OP_CONSOLE_WRITE(6), CLEAR(7), BANNER(8), COLOR(9), GETCHAR(10), SET_CURSOR(11)\nChannels: Framebuffer (1280x720 32bpp) & PS/2 Keyboard Input\n",
-                            7 => b"[CAPABILITY ENDPOINT: Primary ATA PIO Storage Controller (Slot 7 / ata0)]\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nChannels: IDE Port 0x1F0..0x1F7 (512-byte raw sectors)\nPartition Scheme: UEFI GPT (Protective MBR)\n",
-                            _ => b"[CAPABILITY ENDPOINT: Hardware Device Interface]\n",
-                        }
-                    };
-                    let dlen = desc.len();
-                    BLOB_CTX.data[..dlen].copy_from_slice(desc);
-                    BLOB_CTX.length = dlen as u32;
+                        let slot = target.data_len;
+                        let desc: &[u8] = if exec_args.ends_with("ata0p1") {
+                            b"[CAPABILITY ENDPOINT: System Substrate Partition Slice (ata0p1)]\nRange: LBA 2048..10239 (4 MB, Read-Only)\nOperations: OP_STORAGE_READ(20)\n"
+                        } else if exec_args.ends_with("ata0p2") {
+                            b"[CAPABILITY ENDPOINT: Continual VaultStore Partition Slice (ata0p2)]\nRange: LBA 10240..32734 (11.5 MB, Read/Write)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nFormat: Sovereign CapObjects (CoW Generation Monotonic Extents)\n"
+                        } else {
+                            match slot {
+                                5 => b"[CAPABILITY ENDPOINT: Console Video & Framebuffer Subsystem (Slot 5)]\nOperations: OP_CONSOLE_WRITE(6), CLEAR(7), BANNER(8), COLOR(9), GETCHAR(10), SET_CURSOR(11)\nChannels: Framebuffer (1280x720 32bpp) & PS/2 Keyboard Input\n",
+                                7 => b"[CAPABILITY ENDPOINT: Primary ATA PIO Storage Controller (Slot 7 / ata0)]\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nChannels: IDE Port 0x1F0..0x1F7 (512-byte raw sectors)\nPartition Scheme: UEFI GPT (Protective MBR)\n",
+                                _ => b"[CAPABILITY ENDPOINT: Hardware Device Interface]\n",
+                            }
+                        };
+                        let dlen = desc.len();
+                        BLOB_CTX.data[..dlen].copy_from_slice(desc);
+                        BLOB_CTX.length = dlen as u32;
+                    }
                 } else if target.kind == GraphObjectKind::DirectoryMap {
                     if cmd == "axe" {
                         println!("axe: cannot edit directory map '{}'", exec_args);
