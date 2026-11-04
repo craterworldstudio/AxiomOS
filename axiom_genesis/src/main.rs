@@ -126,7 +126,7 @@ pub extern "C" fn _start() -> ! {
         let mut line_buf = [0u8; 128];
 
         loop {
-            ConsoleWriter::set_color(0x0000D2FF, 0x00101418);
+            ConsoleWriter::set_color(0x005CB3E6, 0x00101418); // Soft Sovereign Cyan
             if let Ok(p) = core::str::from_utf8(&cwd[..cwd_len]) {
                 print!("root@axiom:{}# ", p);
             } else {

@@ -46,13 +46,15 @@ typedef unsigned long  size_t;
 #define RIGHTS_GRANT 0b1000
 #define RIGHTS_ALL   0b1111
 
-// Sovereign UI Palette Colors
-#define COLOR_GOLD      0x00FFD166
-#define COLOR_CYAN      0x0000D2FF
-#define COLOR_EMERALD   0x002EE59D
-#define COLOR_CRIMSON   0x00FF4B4B
-#define COLOR_SILVER    0x00E0E0E0
-#define COLOR_BG        0x00101418
+// Sovereign UI Palette Colors (Refined Minimalist Industrial Theme)
+#define COLOR_GOLD      0x00E0A96D  // Muted Warm Amber
+#define COLOR_CYAN      0x005CB3E6  // Soft Sovereign Ice Cyan
+#define COLOR_EMERALD   0x006EBA87  // Calm Sage / Attenuation Green
+#define COLOR_CRIMSON   0x00E05555  // Muted Crimson
+#define COLOR_SILVER    0x00D8DEE9  // Nord-style Crisp Silver
+#define COLOR_MUTED     0x007C8C9E  // Sleek Muted Slate
+#define COLOR_DIM       0x004C566A  // Deep Structural Accent
+#define COLOR_BG        0x00101418  // Deep Obsidian
 
 // Capability Keyring structure passed to user processes
 typedef struct {

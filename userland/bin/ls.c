@@ -57,7 +57,7 @@ static void print_long_entry(const char* name, uint32_t is_dir, uint32_t data_le
         axiom_set_color(COLOR_GOLD, 0x00101418); // Gold Yellow
         axiom_print("EDP  ");
     } else {
-        axiom_set_color(COLOR_SILVER, 0x00101418); // Crisp Silver
+        axiom_set_color(COLOR_MUTED, 0x00101418);  // Sleek Muted Slate
         axiom_print("OBJ  ");
     }
 
@@ -71,7 +71,7 @@ static void print_long_entry(const char* name, uint32_t is_dir, uint32_t data_le
     rights_buf[5] = '>';
     rights_buf[6] = '\0';
 
-    axiom_set_color(COLOR_EMERALD, 0x00101418); // Sovereign Emerald
+    axiom_set_color(COLOR_MUTED, 0x00101418); // Calm Muted Slate
     axiom_print(rights_buf);
     axiom_print(" ");
 
