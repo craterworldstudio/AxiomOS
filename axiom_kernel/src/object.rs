@@ -79,11 +79,23 @@ pub const OBJECT_TABLE_SIZE: usize = 4096;
 /// The central, kernel-private object registry.
 /// Resolves an ObjectRef to its physical placement in bounded O(1) time.
 pub struct ObjectTable {
-    entries: [ObjectEntry; OBJECT_TABLE_SIZE],
-    head_free_index: u32,
+    pub entries: [ObjectEntry; OBJECT_TABLE_SIZE],
+    pub head_free_index: u32,
 }
 
 impl ObjectTable {
+    pub fn find_tcb_by_pid(&self, pid: u32) -> Option<(ObjectRef, u64)> {
+        for i in 1..OBJECT_TABLE_SIZE {
+            if let ObjectState::Active { kind: ObjectKind::TCB, physical_address } = self.entries[i].state {
+                let tcb = unsafe { &*(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(physical_address)) };
+                if tcb.pid == pid {
+                    return Some((ObjectRef::new(i as u32, self.entries[i].generation), physical_address));
+                }
+            }
+        }
+        None
+    }
+
     pub const fn new() -> Self {
         let mut entries = [ObjectEntry {
             generation: 0,
@@ -196,7 +208,7 @@ impl WaitQueue {
 
     pub fn push(&mut self, tcb_ref: ObjectRef, object_table: &ObjectTable) {
         let (_, phys_new) = object_table.resolve(tcb_ref).expect("Queue push: Invalid ObjectRef");
-        let new_tcb_ptr = phys_new as *mut TCB;
+        let new_tcb_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_new);
         
         unsafe {
             core::ptr::write(&raw mut (*new_tcb_ptr).next_in_queue, None);
@@ -204,7 +216,7 @@ impl WaitQueue {
 
         if let Some(tail_ref) = self.tail {
             let (_, phys_tail) = object_table.resolve(tail_ref).unwrap();
-            let tail_tcb_ptr = phys_tail as *mut TCB;
+            let tail_tcb_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_tail);
             unsafe {
                 core::ptr::write(&raw mut (*tail_tcb_ptr).next_in_queue, Some(tcb_ref));
             }
@@ -218,7 +230,7 @@ impl WaitQueue {
     pub fn pop(&mut self, object_table: &ObjectTable) -> Option<ObjectRef> {
         let head_ref = self.head?;
         let (_, phys_head) = object_table.resolve(head_ref).expect("Queue pop: Stale ObjectRef");
-        let head_tcb_ptr = phys_head as *mut TCB;
+        let head_tcb_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_head);
         
         unsafe {
             let next_ptr = &raw mut (*head_tcb_ptr).next_in_queue;
@@ -252,7 +264,7 @@ impl Endpoint {
     pub fn endpoint_send(&mut self, sender_ref: ObjectRef, payload: u64, object_table: &ObjectTable) -> Option<ObjectRef> {
         if let Some(receiver_ref) = self.recv_queue.pop(object_table) {
             let (_, phys_recv) = object_table.resolve(receiver_ref).unwrap();
-            let recv_ptr = phys_recv as *mut TCB;
+            let recv_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_recv);
             
             unsafe {
                 core::ptr::write(&raw mut (*recv_ptr).ipc_payload, payload);
@@ -261,7 +273,7 @@ impl Endpoint {
             Some(receiver_ref) // Return the woken thread!
         } else {
             let (_, phys_send) = object_table.resolve(sender_ref).unwrap();
-            let send_ptr = phys_send as *mut TCB;
+            let send_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_send);
             
             unsafe {
                 core::ptr::write(&raw mut (*send_ptr).ipc_payload, payload);
@@ -276,10 +288,10 @@ impl Endpoint {
     pub fn endpoint_receive(&mut self, receiver_ref: ObjectRef, object_table: &ObjectTable) -> Option<ObjectRef> {
         if let Some(sender_ref) = self.send_queue.pop(object_table) {
             let (_, phys_send) = object_table.resolve(sender_ref).unwrap();
-            let send_ptr = phys_send as *mut TCB;
+            let send_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_send);
             
             let (_, phys_recv) = object_table.resolve(receiver_ref).unwrap();
-            let recv_ptr = phys_recv as *mut TCB;
+            let recv_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_recv);
             
             unsafe {
                 let payload = core::ptr::read(&raw const (*send_ptr).ipc_payload);
@@ -289,7 +301,7 @@ impl Endpoint {
             Some(sender_ref) // Return the woken thread!
         } else {
             let (_, phys_recv) = object_table.resolve(receiver_ref).unwrap();
-            let recv_ptr = phys_recv as *mut TCB;
+            let recv_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_recv);
             
             unsafe {
                 core::ptr::write(&raw mut (*recv_ptr).state, ThreadState::BlockedReceive);

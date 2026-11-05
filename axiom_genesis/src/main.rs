@@ -12,6 +12,7 @@ use core::panic::PanicInfo;
 use libaxiom::capability::*;
 use libaxiom::console::{ConsoleWriter, ConsoleReader};
 use libaxiom::fs::*;
+use libaxiom::syscall::*;
 use libaxiom::*;
 
 // User-space mailbox communication offsets (mapped inside Genesis VSpace at 0x600000)
@@ -126,6 +127,8 @@ pub extern "C" fn _start() -> ! {
         let mut line_buf = [0u8; 128];
 
         loop {
+            reap_background_tasks();
+
             ConsoleWriter::set_color(0x005CB3E6, 0x00101418); // Soft Sovereign Cyan
             if let Ok(p) = core::str::from_utf8(&cwd[..cwd_len]) {
                 print!("root@axiom:{}# ", p);
@@ -187,6 +190,46 @@ fn panic(_info: &PanicInfo) -> ! {
     }
 }
 
+static mut BG_PIDS: [u32; 16] = [0; 16];
+
+fn reap_background_tasks() {
+    let mut procs = [libaxiom::syscall::ProcessInfo {
+        pid: 0, ppid: 0, state: 0, _pad: 0, cr3: 0, name: [0; 32],
+    }; 32];
+    let count = match unsafe { libaxiom::syscall::task_list(procs.as_mut_ptr(), 32) } {
+        Ok(c) => c as usize,
+        Err(_) => return,
+    };
+
+    unsafe {
+        for bg in BG_PIDS.iter_mut() {
+            if *bg == 0 { continue; }
+            let target_pid = *bg;
+            let mut found = false;
+            let mut is_terminated = false;
+            for p in &procs[..count] {
+                if p.pid == target_pid {
+                    found = true;
+                    if p.state == 5 {
+                        is_terminated = true;
+                    }
+                    break;
+                }
+            }
+
+            if is_terminated {
+                let _ = libaxiom::syscall::task_wait(target_pid, core::ptr::null_mut());
+                ConsoleWriter::set_color(0x007C8C9E, 0x00101418); // Muted Slate
+                println!("[Process PID {} completed]", target_pid);
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                *bg = 0;
+            } else if !found {
+                *bg = 0;
+            }
+        }
+    }
+}
+
 fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd_len: &mut usize) {
     if input.is_empty() {
         return;
@@ -209,14 +252,37 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         (false, input)
     };
 
+    let is_background = effective_input.ends_with('&');
+    let effective_input = if is_background {
+        effective_input[..effective_input.len() - 1].trim()
+    } else {
+        effective_input
+    };
+
     if effective_input.is_empty() {
         return;
     }
 
     // 2. Split command name and arguments
     let mut parts = effective_input.splitn(2, ' ');
-    let cmd = parts.next().unwrap_or("");
-    let arg_str = parts.next().unwrap_or("").trim();
+    let raw_cmd = parts.next().unwrap_or("");
+    let raw_arg_str = parts.next().unwrap_or("").trim();
+
+    // Map aliases: ps -> proc list, kill <pid> -> proc kill <pid>
+    let mut kill_buf = [0u8; 64];
+    let (cmd, arg_str) = if raw_cmd == "ps" {
+        ("proc", if raw_arg_str.is_empty() { "list" } else { raw_arg_str })
+    } else if raw_cmd == "kill" {
+        let pfx = b"kill ";
+        kill_buf[..pfx.len()].copy_from_slice(pfx);
+        let ab = raw_arg_str.as_bytes();
+        let ab_len = core::cmp::min(ab.len(), 64 - pfx.len());
+        kill_buf[pfx.len()..pfx.len() + ab_len].copy_from_slice(&ab[..ab_len]);
+        let total = pfx.len() + ab_len;
+        ("proc", core::str::from_utf8(&kill_buf[..total]).unwrap_or("kill"))
+    } else {
+        (raw_cmd, raw_arg_str)
+    };
 
     // 3. Handle built-in shell navigation and inspection commands
     match cmd {
@@ -229,6 +295,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 println!("Options:");
                 println!("  -h, --help    Show this command reference manual");
                 println!("Tip: Run any command with -h (e.g. ls -h, cd -h) for dedicated help.");
+                println!("Tip: Append '&' to run any command concurrently in background (e.g. worker 40 &).");
                 return;
             }
             ConsoleWriter::set_color(0x00FFD166, 0x00101418); // Gold Yellow
@@ -242,6 +309,8 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             println!("  reboot               - Trigger hardware system reboot");
             println!("  shutdown / poweroff  - Cleanly power down substrate / hypervisor");
             println!("  kpanic [scenario]    - Test Kernel Panic diagnostics (assert/gpf/pf/df/div0)");
+            println!("  ps                   - Inspect active tasks (alias for 'proc list')");
+            println!("  kill <pid>           - Terminate task by PID (alias for 'proc kill')");
             println!();
             ConsoleWriter::set_color(0x0000D2FF, 0x00101418); // Cyan
             println!("Available Executables (/apps/sys):");
@@ -256,9 +325,6 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                         if link.in_use {
                             let target = &graph.nodes[link.token.target_id];
                             if target.kind == GraphObjectKind::Blob && target.data_len > 0 {
-                                unsafe {
-                                    core::ptr::copy_nonoverlapping(target.data_ptr, USER_EXEC_BASE, target.data_len);
-                                }
                                 let mut arg0 = [0u8; 32];
                                 let nlen = core::cmp::min(link.name_len, 31);
                                 arg0[..nlen].copy_from_slice(&link.name[..nlen]);
@@ -266,22 +332,35 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                                 let mut arg1 = [0u8; 8];
                                 arg1[..3].copy_from_slice(b"-dh");
 
-                                let argv_ptrs: [*const u8; 2] = [arg0.as_ptr(), arg1.as_ptr()];
-                                let keyring = CapKeyring {
+                                let spawn_params = TaskSpawnParams {
+                                    binary_ptr: target.data_ptr as u64,
+                                    binary_len: target.data_len as u64,
                                     user_id: 0,
                                     rights: 0b1111,
                                     storage_cap: &raw const MAP_CTX as u64,
                                     console_cap: 0x100000005,
                                     user_name: [0; 32],
+                                    map_ctx_ptr: &raw const MAP_CTX as u64,
+                                    blob_ctx_ptr: 0,
+                                    argc: 2,
+                                    argv_ptrs: [arg0.as_ptr() as u64, arg1.as_ptr() as u64, 0, 0, 0, 0, 0, 0],
                                 };
 
-                                let entry: extern "C" fn(i32, *const *const u8, *const CapKeyring) -> i32 =
-                                    unsafe { core::mem::transmute(USER_EXEC_BASE as *const ()) };
-                                let _ = entry(2, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
+                                let spawn_res = unsafe { task_spawn(&spawn_params) };
+                                match spawn_res {
+                                    Ok(pid) => {
+                                        let _wait_res = unsafe { task_wait(pid, core::ptr::null_mut()) };
+                                    },
+                                    Err(err) => {
+                                        println!("  [spawn failed for {}: {:?}]", link.name_str(), err);
+                                    }
+                                }
                             }
                         }
                     }
                 }
+            } else {
+                println!("  [apps/sys not found in CapGraph!]");
             }
 
             ConsoleWriter::set_color(0x002EE59D, 0x00101418); // Emerald
@@ -732,12 +811,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         user_name: username_buf,
     };
 
-    // 6. Copy binary machine code into execution page at 0x500000
-    unsafe {
-        core::ptr::copy_nonoverlapping(target_node.data_ptr, USER_EXEC_BASE, target_node.data_len);
-    }
-
-    // 7. Prepare argc and argv in memory
+    // 6. Prepare argc and argv in memory
     let mut arg0_buf = [0u8; 32];
     let cmd_b = cmd.as_bytes();
     arg0_buf[..cmd_b.len()].copy_from_slice(cmd_b);
@@ -781,11 +855,82 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         argc += 1;
     }
 
-    // 8. Execute C / ASM binary at 0x500000
-    let entry: extern "C" fn(i32, *const *const u8, *const CapKeyring) -> i32 =
-        unsafe { core::mem::transmute(USER_EXEC_BASE as *const ()) };
+    // 7. Spawn isolated Ring 3 process via OP_TASK_SPAWN
+    let is_map = storage_cap_val == &raw const MAP_CTX as u64;
+    let is_blob = storage_cap_val == &raw mut BLOB_CTX as u64;
 
-    let _ret = entry(argc as i32, argv_ptrs.as_ptr(), &keyring as *const CapKeyring);
+    let mut spawn_params = TaskSpawnParams {
+        binary_ptr: target_node.data_ptr as u64,
+        binary_len: target_node.data_len as u64,
+        user_id: keyring.user_id,
+        rights: keyring.rights,
+        storage_cap: keyring.storage_cap,
+        console_cap: keyring.console_cap,
+        user_name: keyring.user_name,
+        map_ctx_ptr: if is_map { &raw const MAP_CTX as u64 } else { 0 },
+        blob_ctx_ptr: if is_blob { &raw mut BLOB_CTX as u64 } else { 0 },
+        argc: argc as u64,
+        argv_ptrs: [0; 8],
+    };
+    for a in 0..core::cmp::min(argc, 8) {
+        spawn_params.argv_ptrs[a] = argv_ptrs[a] as u64;
+    }
+
+    match unsafe { task_spawn(&spawn_params) } {
+        Ok(child_pid) => {
+            if is_background {
+                unsafe {
+                    for slot in BG_PIDS.iter_mut() {
+                        if *slot == 0 {
+                            *slot = child_pid;
+                            break;
+                        }
+                    }
+                }
+                ConsoleWriter::set_color(0x006EBA87, 0x00101418); // Sage Emerald
+                println!("[Spawned background process PID {}]", child_pid);
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return;
+            }
+
+            // Wait for child process to finish, retrieving written-back blob data if editing
+            let wait_res = unsafe {
+                task_wait(
+                    child_pid,
+                    if is_blob { &raw mut BLOB_CTX as *mut u8 } else { core::ptr::null_mut() },
+                )
+            };
+            match wait_res {
+                Ok(exit_code) => {
+                    if exit_code != 0 {
+                        ConsoleWriter::set_color(0x00E05555, 0x00101418); // Muted Crimson
+                        if exit_code == 139 {
+                            println!("[Process PID {} crashed: Segmentation Fault (#14)]", child_pid);
+                        } else if exit_code == 136 {
+                            println!("[Process PID {} crashed: Floating Point Exception / Divide by Zero (#0)]", child_pid);
+                        } else if exit_code == 132 {
+                            println!("[Process PID {} crashed: Illegal Instruction (#6)]", child_pid);
+                        } else {
+                            println!("[Process PID {} exited with code {}]", child_pid, exit_code);
+                        }
+                        ConsoleWriter::set_color(0x00D8DEE9, 0x00101418); // Silver
+                    }
+                },
+                Err(err) => {
+                    ConsoleWriter::set_color(0x00E05555, 0x00101418);
+                    println!("[Failed to wait for child PID {}: {:?}]", child_pid, err);
+                    ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                }
+            }
+        },
+        Err(err) => {
+            ConsoleWriter::set_color(0x00E05555, 0x00101418);
+            println!("axiom: failed to spawn task '{}': {:?}", cmd, err);
+            ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+            return;
+        }
+    }
+
 
     // 9. If axe modified the buffer, flush writeback to CapGraph
     if cmd == "axe" && !exec_args.is_empty() && exec_args != "-dh" {

@@ -72,8 +72,13 @@ _start:
     pop rbx
     mov rsp, rbp
     pop rbp
-    xor eax, eax
-    ret
+    mov rdi, 0x100000003
+    mov rsi, 13
+    xor rdx, rdx
+    syscall
+.hang:
+    pause
+    jmp .hang
 
 section .rodata
 msg: db "root (Authority Keyring #0: Genesis Sovereign)", 10

@@ -329,6 +329,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(&raw mut (*genesis_tcb).vspace, None);
         core::ptr::write(&raw mut (*genesis_tcb).cspace, None);
         core::ptr::write(&raw mut (*genesis_tcb).frame_kind, thread::FrameKind::Cooperative);
+        core::ptr::write(&raw mut (*genesis_tcb).name, *b"kernel_boot\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
 
         scheduler::SCHEDULER.current = Some(genesis_ref);
     }
@@ -416,7 +417,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     // ========================================================================
     // STRESS SUITE: THREAD TERMINATION, LIFECYCLE & FRAME REUSE
     // ========================================================================
-    let trans_stack = bitmap_alloc.allocate_frame().unwrap();
+    let trans_stack_phys = bitmap_alloc.allocate_contiguous(memory::KERNEL_STACK_PAGES).unwrap();
     let (trans_ref, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
     let (_, trans_phys) = object_table.resolve(trans_ref).unwrap();
     let trans_tcb = trans_phys as *mut thread::TCB;
@@ -424,13 +425,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     unsafe {
         // Stage 1: Spawn transient worker that terminates itself
         core::ptr::write(&raw mut (*trans_tcb).state, thread::ThreadState::Ready);
-        core::ptr::write(&raw mut (*trans_tcb).stack_base, trans_stack.start_address);
+        core::ptr::write(&raw mut (*trans_tcb).stack_base, trans_stack_phys);
         core::ptr::write(&raw mut (*trans_tcb).vspace, None);
         core::ptr::write(&raw mut (*trans_tcb).frame_kind, thread::FrameKind::Cooperative);
+        core::ptr::write(&raw mut (*trans_tcb).name, *b"transient\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         core::ptr::write(
             &raw mut (*trans_tcb).rsp,
             thread::TCB::forge_stack(
-                trans_stack.start_address + memory::PAGE_SIZE,
+                trans_stack_phys + memory::KERNEL_STACK_SIZE,
                 transient_worker_entry as *const () as u64,
             ),
         );
@@ -442,7 +444,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(
             &raw mut (*trans_tcb).rsp,
             thread::TCB::forge_stack(
-                trans_stack.start_address + memory::PAGE_SIZE,
+                trans_stack_phys + memory::KERNEL_STACK_SIZE,
                 transient_reused_entry as *const () as u64,
             ),
         );
@@ -453,46 +455,48 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     }
 
     // 2. Spawn Thread B (Valid Capability Context)
-    let stack_b = bitmap_alloc.allocate_frame().unwrap();
+    let stack_b_phys = bitmap_alloc.allocate_contiguous(memory::KERNEL_STACK_PAGES).unwrap();
     let (ref_b, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
     let (_, phys_b) = object_table.resolve(ref_b).unwrap();
     let tcb_b = phys_b as *mut thread::TCB;
 
     unsafe {
         // Plant stack canary at the bottom of stack_b (page base)
-        core::ptr::write_volatile(stack_b.start_address as *mut u64, 0xDEAD_BEEF_CAFE_0001);
+        core::ptr::write_volatile(stack_b_phys as *mut u64, 0xDEAD_BEEF_CAFE_0001);
         core::ptr::write(&raw mut (*tcb_b).state, thread::ThreadState::Ready);
-        core::ptr::write(&raw mut (*tcb_b).stack_base, stack_b.start_address);
+        core::ptr::write(&raw mut (*tcb_b).stack_base, stack_b_phys);
         core::ptr::write(&raw mut (*tcb_b).vspace, None);
         core::ptr::write(&raw mut (*tcb_b).cspace, None);
         core::ptr::write(&raw mut (*tcb_b).frame_kind, thread::FrameKind::Cooperative);
+        core::ptr::write(&raw mut (*tcb_b).name, *b"test_b\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         core::ptr::write(
             &raw mut (*tcb_b).rsp,
             thread::TCB::forge_stack(
-                stack_b.start_address + memory::PAGE_SIZE,
+                stack_b_phys + memory::KERNEL_STACK_SIZE,
                 thread_b_entry as *const () as u64,
             ),
         );
     }
 
     // 3. Spawn Thread C (OP_RECEIVE — rendezvous partner for Thread B & User Thread)
-    let stack_c = bitmap_alloc.allocate_frame().unwrap();
+    let stack_c_phys = bitmap_alloc.allocate_contiguous(memory::KERNEL_STACK_PAGES).unwrap();
     let (ref_c, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
     let (_, phys_c) = object_table.resolve(ref_c).unwrap();
     let tcb_c = phys_c as *mut thread::TCB;
 
     unsafe {
         // Plant stack canary at the bottom of stack_c (page base)
-        core::ptr::write_volatile(stack_c.start_address as *mut u64, 0xDEAD_BEEF_CAFE_0002);
+        core::ptr::write_volatile(stack_c_phys as *mut u64, 0xDEAD_BEEF_CAFE_0002);
         core::ptr::write(&raw mut (*tcb_c).state, thread::ThreadState::Ready);
-        core::ptr::write(&raw mut (*tcb_c).stack_base, stack_c.start_address);
+        core::ptr::write(&raw mut (*tcb_c).stack_base, stack_c_phys);
         core::ptr::write(&raw mut (*tcb_c).vspace, None);
         core::ptr::write(&raw mut (*tcb_c).cspace, None);
         core::ptr::write(&raw mut (*tcb_c).frame_kind, thread::FrameKind::Cooperative);
+        core::ptr::write(&raw mut (*tcb_c).name, *b"test_c\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         core::ptr::write(
             &raw mut (*tcb_c).rsp,
             thread::TCB::forge_stack(
-                stack_c.start_address + memory::PAGE_SIZE,
+                stack_c_phys + memory::KERNEL_STACK_SIZE,
                 thread_c_entry as *const () as u64,
             ),
         );
@@ -503,23 +507,24 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     }
 
     // 4. Spawn Thread D (bad-handle rejection test)
-    let stack_d = bitmap_alloc.allocate_frame().unwrap();
+    let stack_d_phys = bitmap_alloc.allocate_contiguous(memory::KERNEL_STACK_PAGES).unwrap();
     let (ref_d, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
     let (_, phys_d) = object_table.resolve(ref_d).unwrap();
     let tcb_d = phys_d as *mut thread::TCB;
 
     unsafe {
         // Plant stack canary at the bottom of stack_d (page base)
-        core::ptr::write_volatile(stack_d.start_address as *mut u64, 0xDEAD_BEEF_CAFE_0003);
+        core::ptr::write_volatile(stack_d_phys as *mut u64, 0xDEAD_BEEF_CAFE_0003);
         core::ptr::write(&raw mut (*tcb_d).state, thread::ThreadState::Ready);
-        core::ptr::write(&raw mut (*tcb_d).stack_base, stack_d.start_address);
+        core::ptr::write(&raw mut (*tcb_d).stack_base, stack_d_phys);
         core::ptr::write(&raw mut (*tcb_d).vspace, None);
         core::ptr::write(&raw mut (*tcb_d).cspace, None);
         core::ptr::write(&raw mut (*tcb_d).frame_kind, thread::FrameKind::Cooperative);
+        core::ptr::write(&raw mut (*tcb_d).name, *b"test_d\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         core::ptr::write(
             &raw mut (*tcb_d).rsp,
             thread::TCB::forge_stack(
-                stack_d.start_address + memory::PAGE_SIZE,
+                stack_d_phys + memory::KERNEL_STACK_SIZE,
                 thread_d_entry as *const () as u64,
             ),
         );
@@ -541,15 +546,16 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     let (_, genesis_cnode_phys) = object_table.resolve(genesis_cnode_ref).unwrap();
     let genesis_cnode = unsafe {
         let ptr = genesis_cnode_phys as *mut capability::CNode;
-        core::ptr::write(ptr, capability::CNode::new());
+        capability::CNode::init_in_place(ptr);
         &mut *ptr
     };
     ktest(b"Genesis CNode Retyped & Authority Delegated", true);
 
-    // Allocate physical backing frames for Genesis data, stack, and kernel interrupt stack
     let genesis_data_frame  = bitmap_alloc.allocate_frame().unwrap();
     let genesis_stack_frame = bitmap_alloc.allocate_frame().unwrap();
-    let kstack_e            = bitmap_alloc.allocate_frame().unwrap();
+    let kstack_e_phys       = bitmap_alloc.allocate_contiguous(memory::KERNEL_STACK_PAGES).unwrap();
+    let kstack_e_virt       = memory::phys_to_virt(kstack_e_phys) as u64;
+    let kstack_e_top        = kstack_e_virt + memory::KERNEL_STACK_SIZE;
 
     // Retype Genesis TCB (ref_e)
     let (ref_e, _) = capability::retype(&mut untyped1, object::ObjectKind::TCB, object_table, cnode).unwrap();
@@ -662,19 +668,28 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     ).unwrap();
     ktest(b"Genesis Virtual Memory Mapped (0x400000 / 0x600000 / 0x800000)", true);
 
+    unsafe {
+        memory::KERNEL_FRAME_ALLOCATOR = Some(bitmap_alloc);
+    }
+
     // Spawn Genesis Process bound to vspace and private genesis_cnode
     unsafe {
         // Plant stack canary at the bottom of kstack_e (page base)
-        core::ptr::write_volatile(kstack_e.start_address as *mut u64, 0xDEAD_BEEF_CAFE_0004);
+        core::ptr::write_volatile(kstack_e_virt as *mut u64, 0xDEAD_BEEF_CAFE_0004);
+        core::ptr::write(&raw mut (*tcb_e).pid, 1);
+        core::ptr::write(&raw mut (*tcb_e).parent, None);
+        core::ptr::write(&raw mut (*tcb_e).exit_code, 0);
+        core::ptr::write(&raw mut (*tcb_e).data_frame_phys, genesis_data_frame.start_address);
         core::ptr::write(&raw mut (*tcb_e).state, thread::ThreadState::Ready);
-        core::ptr::write(&raw mut (*tcb_e).stack_base, kstack_e.start_address);
+        core::ptr::write(&raw mut (*tcb_e).stack_base, kstack_e_virt);
         core::ptr::write(&raw mut (*tcb_e).vspace, Some(vspace_ref));
         core::ptr::write(&raw mut (*tcb_e).cspace, Some(genesis_cnode_ref));
         core::ptr::write(&raw mut (*tcb_e).frame_kind, thread::FrameKind::Interrupt);
+        core::ptr::write(&raw mut (*tcb_e).name, *b"genesis\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         core::ptr::write(
             &raw mut (*tcb_e).rsp,
             thread::TCB::forge_user_stack(
-                kstack_e.start_address + memory::PAGE_SIZE,
+                kstack_e_top,
                 0x400000,
                 0x800000 + memory::PAGE_SIZE,
             ),
@@ -737,10 +752,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
             if mailbox_signaled && !canaries_verified {
                 // Verify stack canaries for all threads
-                let canaries_ok = *(stack_b.start_address as *const u64) == 0xDEAD_BEEF_CAFE_0001
-                    && *(stack_c.start_address as *const u64) == 0xDEAD_BEEF_CAFE_0002
-                    && *(stack_d.start_address as *const u64) == 0xDEAD_BEEF_CAFE_0003
-                    && *(kstack_e.start_address as *const u64) == 0xDEAD_BEEF_CAFE_0004;
+                let canaries_ok = *(stack_b_phys as *const u64) == 0xDEAD_BEEF_CAFE_0001
+                    && *(stack_c_phys as *const u64) == 0xDEAD_BEEF_CAFE_0002
+                    && *(stack_d_phys as *const u64) == 0xDEAD_BEEF_CAFE_0003
+                    && *(kstack_e_virt as *const u64) == 0xDEAD_BEEF_CAFE_0004;
                 if canaries_ok && interrupts::ISOLATION_TEST_PASSED {
                     ktest(b"Stack Integrity: Zero Overflow Across All Frames", true);
                     ktest(b"VSpace Integrity: CR3 Switched & Isolated", true);
@@ -749,6 +764,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
                     // PHASE 7A: SOVEREIGN SCREEN TAKEOVER & LIVE GENESIS ROOT SHELL
                     serial_print("[PROD] Tests complete! Handing off to Genesis Live Shell...\n");
+                    core::ptr::write(&raw mut (*tcb_b).state, thread::ThreadState::Terminated);
+                    core::ptr::write(&raw mut (*tcb_c).state, thread::ThreadState::Terminated);
+                    core::ptr::write(&raw mut (*tcb_d).state, thread::ThreadState::Terminated);
+                    core::ptr::write(&raw mut (*genesis_tcb).state, thread::ThreadState::Terminated);
                     core::ptr::write_volatile(genesis_data_frame.start_address as *mut u32, 2);
                     core::ptr::write(&raw mut (*tcb_e).state, thread::ThreadState::Ready);
                     core::ptr::write(&raw mut (*tcb_e).frame_kind, thread::FrameKind::Interrupt);
@@ -757,11 +776,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     core::ptr::write(
                         &raw mut (*tcb_e).rsp,
                         thread::TCB::forge_user_stack(
-                            kstack_e.start_address + memory::PAGE_SIZE,
+                            kstack_e_top,
                             0x400000,
                             0x800000 + memory::PAGE_SIZE,
                         ),
                     );
+                    scheduler::SCHEDULER.clear();
                     scheduler::SCHEDULER.enqueue_front(ref_e);
                     scheduler::yield_thread();
                 }

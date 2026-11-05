@@ -34,6 +34,12 @@ impl Scheduler {
         self.queue[self.head] = Some(thread);
     }
 
+    pub fn clear(&mut self) {
+        self.queue = [None; MAX_READY];
+        self.head = 0;
+        self.tail = 0;
+    }
+
     pub fn dequeue(&mut self) -> Option<ObjectRef> {
         if self.head == self.tail {
             return None;
@@ -41,6 +47,24 @@ impl Scheduler {
         let thread = self.queue[self.head].take();
         self.head = (self.head + 1) % MAX_READY;
         thread
+    }
+
+    pub fn dequeue_runnable(&mut self, object_table: &crate::object::ObjectTable) -> Option<(ObjectRef, u64)> {
+        while self.head != self.tail {
+            if let Some(thread_ref) = self.queue[self.head].take() {
+                self.head = (self.head + 1) % MAX_READY;
+                if let Some((_, phys)) = object_table.resolve(thread_ref) {
+                    let tcb = crate::memory::phys_to_virt_ptr::<TCB>(phys);
+                    let state = unsafe { core::ptr::read(&raw const (*tcb).state) };
+                    if state == ThreadState::Ready || state == ThreadState::Running {
+                        return Some((thread_ref, phys));
+                    }
+                }
+            } else {
+                self.head = (self.head + 1) % MAX_READY;
+            }
+        }
+        None
     }
 }
 
@@ -50,33 +74,42 @@ pub static mut SCHEDULER: Scheduler = Scheduler::new();
 /// Rotates the current thread to the back of the queue and switches to the next.
 pub unsafe fn yield_thread() {
     let sched = &mut SCHEDULER;
+    let object_table = &KERNEL_OBJECT_TABLE;
     
-    if let Some(next_ref) = sched.dequeue() {
-        if let Some(prev_ref) = sched.current {
-            let object_table = &KERNEL_OBJECT_TABLE;
-            
-            // 1. Resolve outgoing TCB securely
-            let (_, prev_phys) = object_table.resolve(prev_ref).unwrap();
-            let prev_tcb_ptr = prev_phys as *mut TCB;
-            
-            // 2. State-Aware Rotation: Only enqueue if not blocked!
+    // 1. State-Aware Rotation of outgoing thread: Only enqueue if not blocked/terminated!
+    if let Some(prev_ref) = sched.current {
+        if let Some((_, prev_phys)) = object_table.resolve(prev_ref) {
+            let prev_tcb_ptr = crate::memory::phys_to_virt_ptr::<TCB>(prev_phys);
             let prev_state = core::ptr::read(&raw const (*prev_tcb_ptr).state);
             if prev_state == ThreadState::Ready || prev_state == ThreadState::Running {
-                // Safely update state to Ready if it was Running
                 core::ptr::write(&raw mut (*prev_tcb_ptr).state, ThreadState::Ready);
                 sched.enqueue(prev_ref);
             }
             core::ptr::write(&raw mut (*prev_tcb_ptr).frame_kind, crate::thread::FrameKind::Cooperative);
+        }
+    }
 
-            // 3. Resolve incoming TCB
+    // 2. Select next strictly runnable thread
+    if let Some((next_ref, next_phys)) = sched.dequeue_runnable(object_table) {
+        if let Some(prev_ref) = sched.current {
+            if prev_ref == next_ref {
+                // Same thread already selected, continue execution
+                return;
+            }
+            let (_, prev_phys) = object_table.resolve(prev_ref).unwrap();
+            let prev_tcb_ptr = crate::memory::phys_to_virt_ptr::<TCB>(prev_phys);
+
             sched.current = Some(next_ref);
-            let (_, next_phys) = object_table.resolve(next_ref).unwrap();
-            let next_tcb_ptr = next_phys as *mut TCB;
-            
+            let next_tcb_ptr = crate::memory::phys_to_virt_ptr::<TCB>(next_phys);
             core::ptr::write(&raw mut (*next_tcb_ptr).state, ThreadState::Running);
 
-            // Synchronize CR3 to incoming thread's VSpace (or restore BOOT_CR3)
+            // Read all required incoming TCB fields before updating CR3
             let next_vspace = core::ptr::read(&raw const (*next_tcb_ptr).vspace);
+            let next_stack_base = core::ptr::read(&raw const (*next_tcb_ptr).stack_base);
+            let next_frame_kind = core::ptr::read(&raw const (*next_tcb_ptr).frame_kind);
+            let next_rsp = core::ptr::read(&raw const (*next_tcb_ptr).rsp);
+
+            // Synchronize CR3 to incoming thread's VSpace (keep BOOT_CR3 for kernel threads)
             let target_cr3 = match next_vspace {
                 Some(vspace_ref) => {
                     let (_, pml4_phys) = object_table.resolve(vspace_ref).expect("Failed to resolve VSpace");
@@ -94,16 +127,11 @@ pub unsafe fn yield_thread() {
             }
 
             // Synchronize TSS RSP0 and CpuLocal.kernel_rsp for user mode transitions
-            let next_stack_base = core::ptr::read(&raw const (*next_tcb_ptr).stack_base);
             if next_stack_base != 0 {
-                let kstack_top = next_stack_base + crate::memory::PAGE_SIZE;
+                let kstack_top = next_stack_base + crate::memory::KERNEL_STACK_SIZE;
                 crate::gdt::set_tss_rsp0(kstack_top);
                 crate::syscall::set_cpu_kernel_stack(kstack_top);
             }
-
-            // 4. Distinguish context frame kind
-            let next_frame_kind = core::ptr::read(&raw const (*next_tcb_ptr).frame_kind);
-            let next_rsp = core::ptr::read(&raw const (*next_tcb_ptr).rsp);
 
             match next_frame_kind {
                 crate::thread::FrameKind::Cooperative => {

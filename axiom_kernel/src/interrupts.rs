@@ -139,24 +139,29 @@ pub struct ExceptionStackFrame {
     pub instruction_pointer: u64,
     pub code_segment: u64,
     pub cpu_flags: u64,
+    pub stack_pointer: u64,
+    pub stack_segment: u64,
 }
 
 pub fn kernel_panic(exception: &str, error_code: u64, frame: &ExceptionStackFrame, cr2: u64) {
     let rip = frame.instruction_pointer;
     let rflags = frame.cpu_flags;
     let cs = frame.code_segment;
-    let mut rsp: u64 = 0;
+    let rsp = frame.stack_pointer;
     let mut cr3: u64 = 0;
     unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
         core::arch::asm!("mov {}, cr3", out(reg) cr3);
 
         crate::serial_print("\n[KERNEL PANIC] EXCEPTION: ");
         crate::serial_print(exception);
         crate::serial_print(" RIP: ");
         crate::serial_print_hex(rip);
+        crate::serial_print(" RSP: ");
+        crate::serial_print_hex(rsp);
         crate::serial_print(" CR2: ");
         crate::serial_print_hex(cr2);
+        crate::serial_print(" CR3: ");
+        crate::serial_print_hex(cr3);
         crate::serial_print(" ERROR_CODE: ");
         crate::serial_print_hex(error_code);
         crate::serial_print("\n");
@@ -273,7 +278,22 @@ pub extern "C" fn page_fault_handler(frame: *mut ExceptionStackFrame, cr2: u64, 
         crate::serial_print_hex((*frame).instruction_pointer);
         crate::serial_print(" err=");
         crate::serial_print_hex(error_code);
+        crate::serial_print(" rsp=");
+        crate::serial_print_hex((*frame).stack_pointer);
         crate::serial_print("\n");
+
+        if (*frame).stack_pointer >= 0x700000 && (*frame).stack_pointer < 0x900000 {
+            let sp = (*frame).stack_pointer as *const u64;
+            crate::serial_print("[STACK DUMP] [rsp+0]=");
+            crate::serial_print_hex(*sp);
+            crate::serial_print(" [rsp+8]=");
+            crate::serial_print_hex(*sp.add(1));
+            crate::serial_print(" [rsp+16]=");
+            crate::serial_print_hex(*sp.add(2));
+            crate::serial_print(" [rsp+24]=");
+            crate::serial_print_hex(*sp.add(3));
+            crate::serial_print("\n");
+        }
         let is_user = (error_code & 4) != 0;
         let is_present = (error_code & 1) != 0;
         let is_read = (error_code & 2) == 0;
@@ -568,7 +588,7 @@ pub extern "C" fn timer_interrupt_handler(rsp: u64, cs: u64) -> u64 {
 
         if let Some(prev_ref) = sched.current {
             if let Some((_, prev_phys)) = object_table.resolve(prev_ref) {
-                let prev_tcb = prev_phys as *mut crate::thread::TCB;
+                let prev_tcb = crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(prev_phys);
 
                 // Save interrupted thread's full interrupt context pointer
                 core::ptr::write(&raw mut (*prev_tcb).rsp, rsp);
@@ -583,15 +603,19 @@ pub extern "C" fn timer_interrupt_handler(rsp: u64, cs: u64) -> u64 {
             }
         }
 
-        // Dequeue next eligible thread
-        if let Some(next_ref) = sched.dequeue() {
+        // Dequeue next eligible runnable thread
+        if let Some((next_ref, next_phys)) = sched.dequeue_runnable(object_table) {
             sched.current = Some(next_ref);
-            if let Some((_, next_phys)) = object_table.resolve(next_ref) {
-                let next_tcb = next_phys as *mut crate::thread::TCB;
-                core::ptr::write(&raw mut (*next_tcb).state, crate::thread::ThreadState::Running);
+            let next_tcb = crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(next_phys);
+            core::ptr::write(&raw mut (*next_tcb).state, crate::thread::ThreadState::Running);
+
+            // Extract all incoming TCB fields before updating CR3!
+            let next_vspace = core::ptr::read(&raw const (*next_tcb).vspace);
+            let next_stack_base = core::ptr::read(&raw const (*next_tcb).stack_base);
+            let next_rsp = core::ptr::read(&raw const (*next_tcb).rsp);
+            let next_frame_kind = core::ptr::read(&raw const (*next_tcb).frame_kind);
 
                 // Synchronize CR3 to incoming thread's address space
-                let next_vspace = core::ptr::read(&raw const (*next_tcb).vspace);
                 let target_cr3 = match next_vspace {
                     Some(vref) => object_table.resolve(vref).unwrap().1,
                     None => crate::memory::BOOT_CR3,
@@ -605,15 +629,11 @@ pub extern "C" fn timer_interrupt_handler(rsp: u64, cs: u64) -> u64 {
                 }
 
                 // Synchronize TSS RSP0 and CpuLocal.kernel_rsp for user mode
-                let next_stack_base = core::ptr::read(&raw const (*next_tcb).stack_base);
                 if next_stack_base != 0 {
-                    let kstack_top = next_stack_base + crate::memory::PAGE_SIZE;
+                    let kstack_top = next_stack_base + crate::memory::KERNEL_STACK_SIZE;
                     crate::gdt::set_tss_rsp0(kstack_top);
                     crate::syscall::set_cpu_kernel_stack(kstack_top);
                 }
-
-                let next_rsp = core::ptr::read(&raw const (*next_tcb).rsp);
-                let next_frame_kind = core::ptr::read(&raw const (*next_tcb).frame_kind);
 
                 match next_frame_kind {
                     crate::thread::FrameKind::Interrupt => {
@@ -624,8 +644,7 @@ pub extern "C" fn timer_interrupt_handler(rsp: u64, cs: u64) -> u64 {
                     }
                 }
             }
-        }
 
-        rsp
+            rsp
+        }
     }
-}

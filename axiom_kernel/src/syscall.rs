@@ -39,6 +39,7 @@ pub unsafe fn rdmsr(msr: u32) -> u64 {
 
 pub unsafe fn set_cpu_kernel_stack(rsp0: u64) {
     CPU_LOCAL.kernel_rsp = rsp0;
+    wrmsr(IA32_KERNEL_GS_BASE, (&raw const CPU_LOCAL) as u64);
 }
 
 /// Initializes hardware fast-path system call MSRs and per-CPU state.

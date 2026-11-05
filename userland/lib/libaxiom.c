@@ -115,3 +115,13 @@ int axiom_storage_write(uint32_t lba, const void* buf) {
     uint64_t res = axiom_syscall(ROOT_SLOT_STORAGE, OP_STORAGE_WRITE, (uint64_t)lba, (uint64_t)buf);
     return (res == 0) ? 0 : -1;
 }
+
+int axiom_task_list(ProcessInfo* list, uint32_t max_count) {
+    uint64_t res = axiom_syscall(ROOT_SLOT_TCB, OP_TASK_LIST, (uint64_t)list, (uint64_t)max_count);
+    return (int)res;
+}
+
+int axiom_task_kill(uint32_t pid) {
+    uint64_t res = axiom_syscall(ROOT_SLOT_TCB, OP_TASK_KILL, (uint64_t)pid, 9);
+    return (res == 0) ? 0 : -1;
+}

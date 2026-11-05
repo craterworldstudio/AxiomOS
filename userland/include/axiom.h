@@ -32,6 +32,11 @@ typedef unsigned long  size_t;
 #define OP_CONSOLE_COLOR   9
 #define OP_CONSOLE_GETCHAR 10
 #define OP_CONSOLE_SET_CURSOR 11
+#define OP_TASK_SPAWN      12
+#define OP_TASK_EXIT       13
+#define OP_TASK_WAIT       14
+#define OP_TASK_LIST       15
+#define OP_TASK_KILL       16
 #define OP_STORAGE_READ    20
 #define OP_STORAGE_WRITE   21
 #define OP_SYS_REBOOT      30
@@ -89,6 +94,16 @@ typedef struct {
     uint32_t modified;
 } CapBlobContext;
 
+// Process Information structure for OP_TASK_LIST (56 bytes)
+typedef struct {
+    uint32_t pid;
+    uint32_t ppid;
+    uint32_t state;
+    uint32_t _pad;
+    uint64_t cr3;
+    char     name[32];
+} ProcessInfo;
+
 // Special navigation and control key definitions
 #define KEY_UP          128
 #define KEY_DOWN        129
@@ -121,6 +136,11 @@ static inline uint64_t axiom_syscall(uint64_t handle, uint64_t op, uint64_t arg1
     return ret;
 }
 
+static inline void axiom_exit(int code) {
+    axiom_syscall(ROOT_SLOT_TCB, OP_TASK_EXIT, (uint64_t)(int64_t)code, 0);
+    while (1) { asm volatile ("pause"); }
+}
+
 // Userland API
 void     axiom_print(const char* str);
 void     axiom_print_len(const char* str, size_t len);
@@ -132,6 +152,8 @@ void     axiom_clear(void);
 void     axiom_draw_banner(void);
 int      axiom_storage_read(uint32_t lba, void* buf);
 int      axiom_storage_write(uint32_t lba, const void* buf);
+int      axiom_task_list(ProcessInfo* list, uint32_t max_count);
+int      axiom_task_kill(uint32_t pid);
 
 // Standard string helpers
 size_t   strlen(const char* s);

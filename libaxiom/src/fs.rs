@@ -127,6 +127,8 @@ pub const LS_BIN: &[u8]     = include_bytes!("../../target/userland_bin/ls.bin")
 pub const CAT_BIN: &[u8]    = include_bytes!("../../target/userland_bin/cat.bin");
 pub const WHOAMI_BIN: &[u8] = include_bytes!("../../target/userland_bin/whoami.bin");
 pub const AXE_BIN: &[u8]    = include_bytes!("../../target/userland_bin/axe.bin");
+pub const PROC_BIN: &[u8]   = include_bytes!("../../target/userland_bin/proc.bin");
+pub const WORKER_BIN: &[u8] = include_bytes!("../../target/userland_bin/worker.bin");
 
 // Capability Rights Bitflags
 pub const RIGHTS_NONE: u8  = 0b0000;
@@ -241,7 +243,7 @@ pub struct CapBlobContext {
 const OS_RELEASE: &[u8] = b"NAME=\"AxiomOS Sovereign Core Substrate\"\nVERSION=\"0.2.0-alpha\"\nARCH=\"x86_64\"\nSECURITY=\"Object Capability Graph (CapGraph)\"\nAUTHORITY=\"Zero Ambient Authority (CPL=3)\"\n\0";
 const MOTD: &[u8] = b"Welcome to AxiomOS.\nAll storage is modeled as an Object-Oriented Structural Graph.\nCommands are standalone C/ASM binaries in /apps/sys.\n\0";
 const README: &[u8] = b"Sovereign Root Workspace\n- apps/sys/  : Standalone executable capability binaries (C/ASM)\n- apps/pkg/  : User and installed capability packages\n- meta/      : System capability ledger and configuration\n- vaults/    : User data vaults (VaultFS)\n- edps/      : Device capability endpoints (console, drives/ata0)\n- srvs/      : Ring 3 system server IPC channels\n\0";
-const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\n\0";
+const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\nproc.bin        console:all,storage:read\nworker.bin      console:write\n\0";
 
 impl CapGraph {
     pub const fn new() -> Self {
@@ -285,6 +287,8 @@ impl CapGraph {
         self.add_static_blob(apps_sys_id, "cat.bin", CAT_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(apps_sys_id, "whoami.bin", WHOAMI_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(apps_sys_id, "axe.bin", AXE_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "proc.bin", PROC_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "worker.bin", WORKER_BIN, RIGHTS_EXEC | RIGHTS_READ);
 
         // Add config files to meta/ Map
         self.add_static_blob(meta_id, "caps.ledger", CAPS_LEDGER, RIGHTS_READ);
@@ -881,6 +885,8 @@ impl CapGraph {
             "cat" | "cat.bin" => Some("console:write,storage:read"),
             "whoami" | "whoami.bin" => Some("console:write"),
             "axe" | "axe.bin" => Some("console:all,storage:all"),
+            "proc" | "proc.bin" => Some("console:all,storage:read"),
+            "worker" | "worker.bin" => Some("console:write"),
             _ => None,
         }
     }

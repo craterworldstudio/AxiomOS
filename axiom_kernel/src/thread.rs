@@ -30,6 +30,13 @@ pub struct TCB {
     pub vspace: Option<ObjectRef>,
     pub frame_kind: FrameKind,
     pub cspace: Option<ObjectRef>,
+
+    // Process Lifecycle & Authority Delegation (Phase 9)
+    pub pid: u32,
+    pub parent: Option<ObjectRef>,
+    pub data_frame_phys: u64,
+    pub exit_code: u64,
+    pub name: [u8; 32],
 }
 
 impl TCB {
@@ -55,6 +62,18 @@ impl TCB {
     /// Forges a complete interrupt frame for transitioning to Ring 3 via iretq.
     /// Matches the exact register push order of timer_interrupt_stub.
     pub fn forge_user_stack(kernel_stack_top: u64, user_entry: u64, user_stack_top: u64) -> u64 {
+        Self::forge_user_stack_args(kernel_stack_top, user_entry, user_stack_top, 0, 0, 0)
+    }
+
+    /// Forges a complete interrupt frame with initial RDI, RSI, RDX arguments for System V ABI.
+    pub fn forge_user_stack_args(
+        kernel_stack_top: u64,
+        user_entry: u64,
+        user_stack_top: u64,
+        rdi: u64,
+        rsi: u64,
+        rdx: u64,
+    ) -> u64 {
         let mut rsp = kernel_stack_top;
 
         // 1. Hardware iretq frame for Ring 3:
@@ -69,12 +88,25 @@ impl TCB {
         rsp -= 8; unsafe { *(rsp as *mut u64) = 0x23; }
         rsp -= 8; unsafe { *(rsp as *mut u64) = user_entry; }
 
-        // 2. Full 15 general-purpose registers (r15 down to rax)
-        // Pushed in order: r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx, rax
-        for _ in 0..15 {
-            rsp -= 8;
-            unsafe { *(rsp as *mut u64) = 0; }
-        }
+        // 2. Full 15 general-purpose registers
+        // Pop order in switch_to_interrupt_frame:
+        // rax, rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15
+        // Therefore, we push downwards from r15 to rax:
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r15
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r14
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r13
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r12
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r11
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r10
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r9
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // r8
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // rbp
+        rsp -= 8; unsafe { *(rsp as *mut u64) = rdi; } // rdi (argc)
+        rsp -= 8; unsafe { *(rsp as *mut u64) = rsi; } // rsi (argv)
+        rsp -= 8; unsafe { *(rsp as *mut u64) = rdx; } // rdx (keyring)
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // rcx
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // rbx
+        rsp -= 8; unsafe { *(rsp as *mut u64) = 0; }   // rax
 
         rsp
     }

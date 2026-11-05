@@ -15,6 +15,15 @@ _start:
     # Call main(argc, argv, keyring)
     call main
     
-    movq %rbp, %rsp
-    popq %rbp
-    ret
+    # Return code from main() is in %eax.
+    # Invoke OP_TASK_EXIT (13) via hardware syscall
+    movslq %eax, %rdx
+    movq $0x100000003, %rdi
+    movq $13, %rsi
+    syscall
+
+    # Safe pause loop if syscall returns
+1:
+    pause
+    jmp 1b
+

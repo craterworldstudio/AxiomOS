@@ -12,11 +12,56 @@ pub const OP_CONSOLE_BANNER: u64 = 8;
 pub const OP_CONSOLE_COLOR: u64  = 9;
 pub const OP_CONSOLE_GETCHAR: u64 = 10;
 pub const OP_CONSOLE_SET_CURSOR: u64 = 11;
+pub const OP_TASK_SPAWN: u64 = 12;
+pub const OP_TASK_EXIT: u64  = 13;
+pub const OP_TASK_WAIT: u64  = 14;
+pub const OP_TASK_LIST: u64  = 15;
+pub const OP_TASK_KILL: u64  = 16;
 pub const OP_STORAGE_READ: u64   = 20;
 pub const OP_STORAGE_WRITE: u64  = 21;
 pub const OP_SYS_REBOOT: u64     = 30;
 pub const OP_SYS_SHUTDOWN: u64   = 31;
 pub const OP_KERNEL_PANIC: u64   = 99;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub state: u32,
+    pub _pad: u32,
+    pub cr3: u64,
+    pub name: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TaskSpawnParams {
+    pub binary_ptr: u64,
+    pub binary_len: u64,
+    pub user_id: u32,
+    pub rights: u32,
+    pub storage_cap: u64,
+    pub console_cap: u64,
+    pub user_name: [u8; 32],
+    pub map_ctx_ptr: u64,
+    pub blob_ctx_ptr: u64,
+    pub argc: u64,
+    pub argv_ptrs: [u64; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapKeyring {
+    pub user_id: u32,
+    pub rights: u32,
+    pub storage_cap: u64,
+    pub console_cap: u64,
+    pub user_name: [u8; 32],
+}
+
+pub static mut NEXT_PID: u32 = 2;
+
 
 pub const SYSCALL_OK: u64         = 0;
 pub const ERR_INVALID_HANDLE: u64 = 1;
@@ -117,7 +162,7 @@ impl CapabilitySlot {
     }
 }
 
-pub const CNODE_SLOTS: usize = 256;
+pub const CNODE_SLOTS: usize = 64;
 pub struct CNode {
     pub slots: [CapabilitySlot; CNODE_SLOTS],
 }
@@ -126,6 +171,13 @@ impl CNode {
     pub const fn new() -> Self {
         Self {
             slots: [CapabilitySlot::empty(); CNODE_SLOTS],
+        }
+    }
+
+    pub unsafe fn init_in_place(ptr: *mut CNode) {
+        let slots_ptr = core::ptr::addr_of_mut!((*ptr).slots);
+        for i in 0..CNODE_SLOTS {
+            core::ptr::write((*slots_ptr).as_mut_ptr().add(i), CapabilitySlot::empty());
         }
     }
 
@@ -281,10 +333,458 @@ pub fn retype(
     untyped.watermark = new_watermark;
     let obj_ref = object_table.register_object(kind, aligned_phys).unwrap();
 
+    if kind == ObjectKind::TCB {
+        unsafe {
+            core::ptr::write_bytes(crate::memory::phys_to_virt_ptr::<u8>(aligned_phys), 0, core::mem::size_of::<crate::thread::TCB>());
+        }
+    } else if kind == ObjectKind::CNode {
+        unsafe {
+            CNode::init_in_place(crate::memory::phys_to_virt_ptr::<CNode>(aligned_phys));
+        }
+    }
+
     let cap = Capability { object: obj_ref, kind, rights: Rights::ALL };
     cnode.slots[cnode_slot_idx].insert(cap);
 
     Ok((obj_ref, cnode_slot_idx))
+}
+
+pub unsafe fn sys_task_spawn(
+    caller_ref: ObjectRef,
+    _caller_tcb: &mut crate::thread::TCB,
+    cnode: &mut CNode,
+    object_table: &mut ObjectTable,
+    params_ptr: u64,
+) -> u64 {
+    crate::serial_print("[KERNEL] sys_task_spawn invoked with params_ptr=");
+    crate::serial_print_hex(params_ptr);
+    crate::serial_print("\n");
+
+    let params_ptr = params_ptr as *const TaskSpawnParams;
+    if params_ptr.is_null() || (params_ptr as u64) >= 0x0000_8000_0000_0000 {
+        return ERR_INVALID_HANDLE;
+    }
+    let params = core::ptr::read(params_ptr);
+    crate::serial_print("[KERNEL] binary_ptr=");
+    crate::serial_print_hex(params.binary_ptr);
+    crate::serial_print(" len=");
+    crate::serial_print_hex(params.binary_len);
+    crate::serial_print("\n");
+    if params.binary_ptr == 0 || params.binary_len == 0 || params.binary_len > 0x100000 {
+        return ERR_INVALID_HANDLE;
+    }
+
+    let pml4_frame = match crate::memory::allocate_frame() {
+        Some(f) => f,
+        None => return 0xFFFFFFFF_00000001,
+    };
+
+    let alloc = match crate::memory::KERNEL_FRAME_ALLOCATOR.as_mut() {
+        Some(a) => a,
+        None => return 0xFFFFFFFF_00000002,
+    };
+
+    let child_vspace = match crate::memory::VSpace::create(pml4_frame.start_address, alloc) {
+        Ok(v) => v,
+        Err(_) => {
+            alloc.deallocate_frame(pml4_frame);
+            return 0xFFFFFFFF_00000003;
+        }
+    };
+    crate::serial_print("[KERNEL] sys_task_spawn: VSpace created, copying binary...\n");
+
+    // 16 execution pages at 0x500000 (64 KiB)
+    let binary_slice = core::slice::from_raw_parts(params.binary_ptr as *const u8, params.binary_len as usize);
+    for i in 0..16 {
+        let frame = match alloc.allocate_frame() {
+            Some(f) => f,
+            None => return 0xFFFFFFFF_00000004,
+        };
+        let dst = crate::memory::phys_to_virt(frame.start_address);
+        let offset = i * 4096;
+        if offset < params.binary_len as usize {
+            let chunk = core::cmp::min(4096, params.binary_len as usize - offset);
+            core::ptr::copy_nonoverlapping(binary_slice.as_ptr().add(offset), dst, chunk);
+            if chunk < 4096 {
+                core::ptr::write_bytes(dst.add(chunk), 0, 4096 - chunk);
+            }
+        } else {
+            core::ptr::write_bytes(dst, 0, 4096);
+        }
+
+        let map_res = child_vspace.map_page(
+            0x500000 + (i as u64) * 4096,
+            frame.start_address,
+            crate::memory::PageFlags::PRESENT | crate::memory::PageFlags::USER | crate::memory::PageFlags::WRITABLE,
+            alloc,
+        );
+        if map_res.is_err() {
+            return 0xFFFFFFFF_00000005;
+        }
+    }
+
+    // 1 Data page at 0x600000
+    let data_frame = match alloc.allocate_frame() {
+        Some(f) => f,
+        None => return 0xFFFFFFFF_00000006,
+    };
+    let data_ptr = crate::memory::phys_to_virt(data_frame.start_address);
+    core::ptr::write_bytes(data_ptr, 0, 4096);
+
+    let keyring_dst = data_ptr as *mut CapKeyring;
+    let child_keyring = CapKeyring {
+        user_id: params.user_id,
+        rights: params.rights,
+        storage_cap: 0x600040,
+        console_cap: params.console_cap,
+        user_name: params.user_name,
+    };
+    core::ptr::write(keyring_dst, child_keyring);
+
+    if params.map_ctx_ptr != 0 && params.map_ctx_ptr < 0x0000_8000_0000_0000 {
+        core::ptr::copy_nonoverlapping(params.map_ctx_ptr as *const u8, data_ptr.add(0x40), 904);
+    } else if params.blob_ctx_ptr != 0 && params.blob_ctx_ptr < 0x0000_8000_0000_0000 {
+        core::ptr::copy_nonoverlapping(params.blob_ctx_ptr as *const u8, data_ptr.add(0x40), 1032);
+    }
+
+    // Setup argv table (at 0x440) and argv strings (at 0x480)
+    let argc = core::cmp::min(params.argc as usize, 8);
+    let mut str_offset = 0x480;
+    let argv_table = data_ptr.add(0x440) as *mut u64;
+
+    for i in 0..argc {
+        let arg_src = params.argv_ptrs[i] as *const u8;
+        if !arg_src.is_null() && (arg_src as u64) < 0x0000_8000_0000_0000 {
+            let mut slen = 0;
+            while slen < 63 && *arg_src.add(slen) != 0 {
+                slen += 1;
+            }
+            if str_offset + slen + 1 <= 4096 {
+                core::ptr::copy_nonoverlapping(arg_src, data_ptr.add(str_offset), slen);
+                *data_ptr.add(str_offset + slen) = 0;
+                *argv_table.add(i) = 0x600000 + str_offset as u64;
+                str_offset += slen + 1;
+            } else {
+                *argv_table.add(i) = 0;
+            }
+        } else {
+            *argv_table.add(i) = 0;
+        }
+    }
+    *argv_table.add(argc) = 0;
+
+    let _ = child_vspace.map_page(
+        0x600000,
+        data_frame.start_address,
+        crate::memory::PageFlags::PRESENT | crate::memory::PageFlags::USER | crate::memory::PageFlags::WRITABLE,
+        alloc,
+    );
+
+    // 16 user stack pages at 0x7F0000..0x800000
+    for s in 0..16 {
+        let stack_frame = match alloc.allocate_frame() {
+            Some(f) => f,
+            None => return 0xFFFFFFFF_00000007,
+        };
+        let _ = child_vspace.map_page(
+            0x7F0000 + (s as u64) * 4096,
+            stack_frame.start_address,
+            crate::memory::PageFlags::PRESENT | crate::memory::PageFlags::USER | crate::memory::PageFlags::WRITABLE,
+            alloc,
+        );
+    }
+
+    let kstack_phys = match alloc.allocate_contiguous(crate::memory::KERNEL_STACK_PAGES) {
+        Some(addr) => addr,
+        None => return 0xFFFFFFFF_00000008,
+    };
+    let kstack_virt_base = crate::memory::phys_to_virt(kstack_phys) as u64;
+    let kstack_top = kstack_virt_base + crate::memory::KERNEL_STACK_SIZE;
+    core::ptr::write_volatile(kstack_virt_base as *mut u64, 0xDEAD_BEEF_CAFE_0005);
+
+    let child_vspace_ref = match object_table.register_object(ObjectKind::VSpace, child_vspace.pml4_phys) {
+        Some(r) => r,
+        None => return 0xFFFFFFFF_00000009,
+    };
+
+    let child_cnode_frame = match alloc.allocate_frame() {
+        Some(f) => f,
+        None => return 0xFFFFFFFF_0000000A,
+    };
+    let child_cnode_ptr = crate::memory::phys_to_virt_ptr::<CNode>(child_cnode_frame.start_address);
+    CNode::init_in_place(child_cnode_ptr);
+    let child_cnode = &mut *child_cnode_ptr;
+    let child_cnode_ref = match object_table.register_object(ObjectKind::CNode, child_cnode_frame.start_address) {
+        Some(r) => r,
+        None => return 0xFFFFFFFF_0000000B,
+    };
+
+    let child_tcb_frame = match alloc.allocate_frame() {
+        Some(f) => f,
+        None => return 0xFFFFFFFF_0000000C,
+    };
+    let child_tcb_ptr = crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(child_tcb_frame.start_address);
+    core::ptr::write_bytes(child_tcb_ptr as *mut u8, 0, core::mem::size_of::<crate::thread::TCB>());
+    let child_tcb = &mut *child_tcb_ptr;
+    let child_tcb_ref = match object_table.register_object(ObjectKind::TCB, child_tcb_frame.start_address) {
+        Some(r) => r,
+        None => return 0xFFFFFFFF_0000000D,
+    };
+
+    let child_pid = NEXT_PID;
+    NEXT_PID += 1;
+
+    child_cnode.slots[1].insert(Capability {
+        object: child_cnode_ref,
+        kind: ObjectKind::CNode,
+        rights: Rights::ALL,
+    });
+    child_cnode.slots[2].insert(Capability {
+        object: child_vspace_ref,
+        kind: ObjectKind::VSpace,
+        rights: Rights::ALL,
+    });
+    child_cnode.slots[3].insert(Capability {
+        object: child_tcb_ref,
+        kind: ObjectKind::TCB,
+        rights: Rights::ALL,
+    });
+
+    if let Some(c5) = &cnode.slots[5].capability {
+        child_cnode.slots[5].insert(*c5);
+    }
+    if let Some(c7) = &cnode.slots[7].capability {
+        child_cnode.slots[7].insert(*c7);
+    }
+
+    child_tcb.pid = child_pid;
+    child_tcb.parent = Some(caller_ref);
+    child_tcb.state = crate::thread::ThreadState::Ready;
+    child_tcb.frame_kind = crate::thread::FrameKind::Interrupt;
+    child_tcb.cspace = Some(child_cnode_ref);
+    child_tcb.vspace = Some(child_vspace_ref);
+    child_tcb.stack_base = kstack_virt_base;
+    child_tcb.data_frame_phys = data_frame.start_address;
+    child_tcb.exit_code = 0;
+
+    let mut proc_name = [0u8; 32];
+    let arg0_src = params.argv_ptrs[0] as *const u8;
+    if !arg0_src.is_null() && (arg0_src as u64) < 0x0000_8000_0000_0000 {
+        let mut slen = 0;
+        while slen < 31 && *arg0_src.add(slen) != 0 {
+            slen += 1;
+        }
+        core::ptr::copy_nonoverlapping(arg0_src, proc_name.as_mut_ptr(), slen);
+    }
+    child_tcb.name = proc_name;
+
+    child_tcb.rsp = crate::thread::TCB::forge_user_stack_args(
+        kstack_top,
+        0x500000,
+        0x800000,
+        argc as u64,
+        0x600440,
+        0x600000,
+    );
+
+    crate::scheduler::SCHEDULER.enqueue_front(child_tcb_ref);
+
+    crate::serial_print("[KERNEL] Spawned child task PID ");
+    crate::serial_print_hex(child_pid as u64);
+    crate::serial_print(" with isolated VSpace CR3=");
+    crate::serial_print_hex(child_vspace.pml4_phys);
+    crate::serial_print("\n");
+
+    child_pid as u64
+}
+
+pub unsafe fn sys_task_exit(
+    caller_tcb: &mut crate::thread::TCB,
+    object_table: &mut ObjectTable,
+    exit_code: u64,
+) -> u64 {
+    caller_tcb.state = crate::thread::ThreadState::Terminated;
+    caller_tcb.exit_code = exit_code;
+
+    crate::serial_print("[KERNEL] Task PID ");
+    crate::serial_print_hex(caller_tcb.pid as u64);
+    crate::serial_print(" exited with code ");
+    crate::serial_print_hex(exit_code);
+    crate::serial_print("\n");
+
+    if let Some(parent_ref) = caller_tcb.parent {
+        if let Some((_, parent_phys)) = object_table.resolve(parent_ref) {
+            let parent_tcb = &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(parent_phys));
+            if parent_tcb.state == crate::thread::ThreadState::BlockedReceive {
+                parent_tcb.state = crate::thread::ThreadState::Ready;
+                crate::scheduler::SCHEDULER.enqueue_front(parent_ref);
+            }
+        }
+    }
+
+    crate::scheduler::yield_thread();
+    SYSCALL_OK
+}
+
+pub unsafe fn sys_task_wait(
+    caller_ref: ObjectRef,
+    caller_tcb: &mut crate::thread::TCB,
+    object_table: &mut ObjectTable,
+    target_pid: u32,
+    out_blob_ptr: *mut u8,
+) -> u64 {
+    loop {
+        let (child_ref, child_phys) = match object_table.find_tcb_by_pid(target_pid) {
+            Some(c) => c,
+            None => return ERR_INVALID_HANDLE,
+        };
+
+        let child_tcb = &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(child_phys));
+        if child_tcb.state == crate::thread::ThreadState::Terminated {
+            let exit_code = child_tcb.exit_code;
+
+            if !out_blob_ptr.is_null() && (out_blob_ptr as u64) < 0x0000_8000_0000_0000 && child_tcb.data_frame_phys != 0 {
+                core::ptr::copy_nonoverlapping(
+                    crate::memory::phys_to_virt(child_tcb.data_frame_phys + 0x40),
+                    out_blob_ptr,
+                    1032,
+                );
+            }
+
+            crate::serial_print("[KERNEL] Reaped child task PID ");
+            crate::serial_print_hex(target_pid as u64);
+            crate::serial_print(" exit_code=");
+            crate::serial_print_hex(exit_code);
+            crate::serial_print("\n");
+
+            if let Some(cspace_ref) = child_tcb.cspace {
+                object_table.destroy_object(cspace_ref);
+            }
+            if let Some(vspace_ref) = child_tcb.vspace {
+                object_table.destroy_object(vspace_ref);
+            }
+            object_table.destroy_object(child_ref);
+
+            return exit_code;
+        }
+
+        caller_tcb.state = crate::thread::ThreadState::BlockedReceive;
+        crate::scheduler::yield_thread();
+    }
+}
+
+pub unsafe fn sys_task_list(
+    _caller_tcb: &mut crate::thread::TCB,
+    object_table: &ObjectTable,
+    out_buf_ptr: u64,
+    max_count: u64,
+) -> u64 {
+    if out_buf_ptr == 0 || out_buf_ptr >= 0x0000_8000_0000_0000 || max_count == 0 {
+        return 0;
+    }
+    let limit = core::cmp::min(max_count as usize, 64);
+    let out_slice = core::slice::from_raw_parts_mut(out_buf_ptr as *mut ProcessInfo, limit);
+    let mut count = 0;
+
+    for i in 1..crate::object::OBJECT_TABLE_SIZE {
+        if let crate::object::ObjectState::Active { kind: ObjectKind::TCB, physical_address } = object_table.entries[i].state {
+            if count >= limit {
+                break;
+            }
+            let tcb = &*(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(physical_address));
+
+            // Resolve parent PID
+            let ppid = if let Some(parent_ref) = tcb.parent {
+                if let Some((_, parent_phys)) = object_table.resolve(parent_ref) {
+                    let parent_tcb = &*(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(parent_phys));
+                    parent_tcb.pid
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            // Resolve CR3
+            let cr3 = if let Some(vspace_ref) = tcb.vspace {
+                if let Some((_, vspace_phys)) = object_table.resolve(vspace_ref) {
+                    vspace_phys
+                } else {
+                    crate::memory::BOOT_CR3
+                }
+            } else {
+                crate::memory::BOOT_CR3
+            };
+
+            out_slice[count] = ProcessInfo {
+                pid: tcb.pid,
+                ppid,
+                state: tcb.state as u32,
+                _pad: 0,
+                cr3,
+                name: tcb.name,
+            };
+            count += 1;
+        }
+    }
+
+    count as u64
+}
+
+pub unsafe fn sys_task_kill(
+    caller_tcb: &mut crate::thread::TCB,
+    object_table: &mut ObjectTable,
+    target_pid: u32,
+    _signal: u64,
+) -> u64 {
+    // Security check: Protect Genesis PID 1
+    if target_pid <= 1 {
+        return ERR_INVALID_RIGHTS;
+    }
+
+    let (target_ref, target_phys) = match object_table.find_tcb_by_pid(target_pid) {
+        Some(t) => t,
+        None => return ERR_INVALID_HANDLE,
+    };
+
+    let target_tcb = &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(target_phys));
+    if target_tcb.state == crate::thread::ThreadState::Terminated {
+        // Reaping already-terminated zombie process
+        if let Some(cspace_ref) = target_tcb.cspace {
+            object_table.destroy_object(cspace_ref);
+        }
+        if let Some(vspace_ref) = target_tcb.vspace {
+            object_table.destroy_object(vspace_ref);
+        }
+        object_table.destroy_object(target_ref);
+
+        crate::serial_print("[KERNEL] Purged zombie process PID ");
+        crate::serial_print_hex(target_pid as u64);
+        crate::serial_print("\n");
+        return SYSCALL_OK;
+    }
+
+    target_tcb.state = crate::thread::ThreadState::Terminated;
+    target_tcb.exit_code = 137; // SIGKILL equivalent
+
+    crate::serial_print("[KERNEL] Process PID ");
+    crate::serial_print_hex(target_pid as u64);
+    crate::serial_print(" terminated by PID ");
+    crate::serial_print_hex(caller_tcb.pid as u64);
+    crate::serial_print("\n");
+
+    // Unblock parent if waiting
+    if let Some(parent_ref) = target_tcb.parent {
+        if let Some((_, parent_phys)) = object_table.resolve(parent_ref) {
+            let parent_tcb = &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(parent_phys));
+            if parent_tcb.state == crate::thread::ThreadState::BlockedReceive {
+                parent_tcb.state = crate::thread::ThreadState::Ready;
+                crate::scheduler::SCHEDULER.enqueue_front(parent_ref);
+            }
+        }
+    }
+
+    SYSCALL_OK
 }
 
 #[no_mangle]
@@ -296,6 +796,20 @@ pub extern "C" fn sys_invoke_handler(
     _arg3: u64,
     _arg4: u64,
 ) -> u64 {
+    let caller_ref = unsafe {
+        crate::scheduler::SCHEDULER.current
+            .expect("sys_invoke: no current thread")
+    };
+    let object_table = unsafe { &mut KERNEL_OBJECT_TABLE };
+    let (_, caller_phys) = object_table.resolve(caller_ref).unwrap();
+    let caller_tcb = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(caller_phys)) };
+
+
+    // Fast-path for OP_TASK_EXIT: a process can always exit itself regardless of handle!
+    if operation == OP_TASK_EXIT {
+        return unsafe { sys_task_exit(caller_tcb, object_table, arg1) };
+    }
+
     let handle = CapHandle(handle_val);
     let slot_idx = handle.index() as usize;
 
@@ -304,20 +818,12 @@ pub extern "C" fn sys_invoke_handler(
     // Security: Spectre v1 mitigation
     unsafe { core::arch::asm!("lfence"); }
 
-    let caller_ref = unsafe {
-        crate::scheduler::SCHEDULER.current
-            .expect("sys_invoke: no current thread")
-    };
-    let object_table = unsafe { &mut KERNEL_OBJECT_TABLE };
 
     // Resolve caller's private CNode or fallback to GENESIS_CNODE
-    let (_, caller_phys) = object_table.resolve(caller_ref).unwrap();
-    let caller_tcb = unsafe { &mut *(caller_phys as *mut crate::thread::TCB) };
-
     let cnode: &mut CNode = match caller_tcb.cspace {
         Some(cspace_ref) => {
             let (_, cnode_phys) = object_table.resolve(cspace_ref).unwrap();
-            unsafe { &mut *(cnode_phys as *mut CNode) }
+            unsafe { &mut *(crate::memory::phys_to_virt_ptr::<CNode>(cnode_phys)) }
         },
         None => unsafe { &mut GENESIS_CNODE },
     };
@@ -361,7 +867,7 @@ pub extern "C" fn sys_invoke_handler(
 
     match kind {
         ObjectKind::Endpoint => {
-            let ep = unsafe { &mut *(phys_addr as *mut crate::object::Endpoint) };
+            let ep = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::object::Endpoint>(phys_addr)) };
 
             match operation {
                 OP_SEND => {
@@ -391,7 +897,7 @@ pub extern "C" fn sys_invoke_handler(
                     }
                     if let Some(receiver_ref) = ep.recv_queue.pop(object_table) {
                         let (_, phys_recv) = object_table.resolve(receiver_ref).unwrap();
-                        let recv_ptr = phys_recv as *mut crate::thread::TCB;
+                        let recv_ptr = crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(phys_recv);
                         unsafe {
                             core::ptr::write(&raw mut (*recv_ptr).ipc_payload, arg1);
                             core::ptr::write(&raw mut (*recv_ptr).state, crate::thread::ThreadState::Ready);
@@ -488,7 +994,7 @@ pub extern "C" fn sys_invoke_handler(
                             },
                             2 => {
                                 // Scenario 2: Kernel Page Fault (#14) via unmapped address
-                                let bad_ptr = 0xFFFF_8000_DEAD_BEEF as *mut u64;
+                                let bad_ptr = 0xFFFF_FFFF_DEAD_BEEF as *mut u64;
                                 *bad_ptr = 0x1337;
                             },
                             3 => {
@@ -531,9 +1037,52 @@ pub extern "C" fn sys_invoke_handler(
                         }
                     }
                 },
+                OP_TASK_SPAWN => {
+                    unsafe { sys_task_spawn(caller_ref, caller_tcb, cnode, object_table, arg1) }
+                },
+                OP_TASK_WAIT => {
+                    unsafe { sys_task_wait(caller_ref, caller_tcb, object_table, arg1 as u32, arg2 as *mut u8) }
+                },
+                OP_TASK_EXIT => {
+                    unsafe { sys_task_exit(caller_tcb, object_table, arg1) }
+                },
+                OP_TASK_LIST => {
+                    unsafe { sys_task_list(caller_tcb, object_table, arg1, arg2) }
+                },
+                OP_TASK_KILL => {
+                    unsafe { sys_task_kill(caller_tcb, object_table, arg1 as u32, arg2) }
+                },
                 _ => ERR_UNSUPPORTED_OP,
             }
         },
-        _ => ERR_INVALID_KIND,
+        ObjectKind::TCB => {
+            match operation {
+                OP_TASK_SPAWN => {
+                    if !cap.rights.contains(Rights::EXEC) && !cap.rights.contains(Rights::ALL) {
+                        return ERR_INVALID_RIGHTS;
+                    }
+                    unsafe { sys_task_spawn(caller_ref, caller_tcb, cnode, object_table, arg1) }
+                },
+                OP_TASK_WAIT => {
+                    if !cap.rights.contains(Rights::READ) && !cap.rights.contains(Rights::ALL) {
+                        return ERR_INVALID_RIGHTS;
+                    }
+                    unsafe { sys_task_wait(caller_ref, caller_tcb, object_table, arg1 as u32, arg2 as *mut u8) }
+                },
+                OP_TASK_EXIT => {
+                    unsafe { sys_task_exit(caller_tcb, object_table, arg1) }
+                },
+                OP_TASK_LIST => {
+                    unsafe { sys_task_list(caller_tcb, object_table, arg1, arg2) }
+                },
+                OP_TASK_KILL => {
+                    unsafe { sys_task_kill(caller_tcb, object_table, arg1 as u32, arg2) }
+                },
+                _ => ERR_UNSUPPORTED_OP,
+            }
+        },
+        _ => {
+            ERR_INVALID_KIND
+        },
     }
 }

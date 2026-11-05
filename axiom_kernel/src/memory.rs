@@ -25,6 +25,8 @@ pub struct MemoryMapEntry {
 }
 
 pub const PAGE_SIZE: u64 = 4096;
+pub const KERNEL_STACK_PAGES: usize = 8; // 32 KiB
+pub const KERNEL_STACK_SIZE: u64 = (KERNEL_STACK_PAGES as u64) * PAGE_SIZE;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PhysFrame {
@@ -241,7 +243,42 @@ pub enum MapError {
     AllocationFailed,
 }
 
+pub const PHYS_MAP_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+
+#[inline(always)]
+pub fn phys_to_virt(phys: u64) -> *mut u8 {
+    let cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+        if (cr3 & !0xFFF) == (BOOT_CR3 & !0xFFF) || phys < 0x400_000 {
+            phys as *mut u8
+        } else {
+            (PHYS_MAP_OFFSET + phys) as *mut u8
+        }
+    }
+}
+
+#[inline(always)]
+pub fn phys_to_virt_ptr<T>(phys: u64) -> *mut T {
+    phys_to_virt(phys) as *mut T
+}
+
 pub static mut BOOT_CR3: u64 = 0;
+pub static mut KERNEL_FRAME_ALLOCATOR: Option<BitmapAllocator> = None;
+
+pub fn allocate_frame() -> Option<PhysFrame> {
+    unsafe {
+        KERNEL_FRAME_ALLOCATOR.as_mut().and_then(|alloc| alloc.allocate_frame())
+    }
+}
+
+pub fn deallocate_frame(frame: PhysFrame) {
+    unsafe {
+        if let Some(alloc) = KERNEL_FRAME_ALLOCATOR.as_mut() {
+            alloc.deallocate_frame(frame);
+        }
+    }
+}
 
 pub unsafe fn init_boot_cr3() {
     let cr3: u64;
@@ -249,7 +286,8 @@ pub unsafe fn init_boot_cr3() {
     BOOT_CR3 = cr3;
 }
 
-#[repr(C, align(4096))]
+
+#[repr(C)]
 pub struct VSpace {
     pub pml4_phys: u64,
 }
@@ -262,7 +300,7 @@ impl VSpace {
         pml4_phys: u64,
         allocator: &mut BitmapAllocator,
     ) -> Result<Self, MapError> {
-        let pml4 = pml4_phys as *mut u64;
+        let pml4 = phys_to_virt_ptr::<u64>(pml4_phys);
         
         unsafe {
             // 1. Zero all 512 entries in the root PML4
@@ -273,7 +311,7 @@ impl VSpace {
             // 2. Clone supervisor-only high mappings from BOOT_CR3 (framebuffer, ACPI, etc.)
             let boot_cr3 = BOOT_CR3;
             if boot_cr3 != 0 {
-                let boot_pml4 = (boot_cr3 & !0xFFF) as *const u64;
+                let boot_pml4 = phys_to_virt_ptr::<u64>(boot_cr3 & !0xFFF);
                 for i in 1..512 {
                     let boot_val = core::ptr::read_volatile(boot_pml4.add(i));
                     if boot_val & PageFlags::PRESENT.bits() != 0 {
@@ -281,12 +319,18 @@ impl VSpace {
                         core::ptr::write_volatile(pml4.add(i), boot_val & !4);
                     }
                 }
+
+                // Explicitly ensure Higher-Half Direct Physical Map (HHDM) is mapped at PML4[256]
+                let boot_pml4_0 = core::ptr::read_volatile(boot_pml4);
+                if boot_pml4_0 & PageFlags::PRESENT.bits() != 0 {
+                    core::ptr::write_volatile(pml4.add(256), boot_pml4_0 & !4);
+                }
             }
 
             // 3. Construct private PDPT for PML4[0] (low 512 GiB)
             let pdpt_frame = allocator.allocate_frame().ok_or(MapError::AllocationFailed)?;
             let pdpt_phys = pdpt_frame.start_address;
-            let pdpt = pdpt_phys as *mut u64;
+            let pdpt = phys_to_virt_ptr::<u64>(pdpt_phys);
             for i in 0..512 {
                 core::ptr::write_volatile(pdpt.add(i), 0);
             }
@@ -294,10 +338,10 @@ impl VSpace {
             // Clone boot_pdpt[1..512] as supervisor-only so MMIO and GOP framebuffer (e.g. at 2 GiB)
             // remain accessible to kernel execution under this VSpace
             if boot_cr3 != 0 {
-                let boot_pml4 = (boot_cr3 & !0xFFF) as *const u64;
+                let boot_pml4 = phys_to_virt_ptr::<u64>(boot_cr3 & !0xFFF);
                 let boot_pml4_0 = core::ptr::read_volatile(boot_pml4);
                 if boot_pml4_0 & PageFlags::PRESENT.bits() != 0 {
-                    let boot_pdpt = (boot_pml4_0 & 0x000F_FFFF_FFFF_F000) as *const u64;
+                    let boot_pdpt = phys_to_virt_ptr::<u64>(boot_pml4_0 & 0x000F_FFFF_FFFF_F000);
                     for i in 1..512 {
                         let boot_val = core::ptr::read_volatile(boot_pdpt.add(i));
                         if boot_val & PageFlags::PRESENT.bits() != 0 {
@@ -315,18 +359,19 @@ impl VSpace {
             // 4. Construct private PD for PDPT[0] (low 1 GiB)
             let pd_frame = allocator.allocate_frame().ok_or(MapError::AllocationFailed)?;
             let pd_phys = pd_frame.start_address;
-            let pd = pd_phys as *mut u64;
+            let pd = phys_to_virt_ptr::<u64>(pd_phys);
             for i in 0..512 {
                 core::ptr::write_volatile(pd.add(i), 0);
             }
             // Link PDPT[0] -> PD with USER permissions
             core::ptr::write_volatile(pdpt, pd_phys | ancestor_flags);
 
-            // 5. Map Kernel Memory in PD[0] (0x000000..0x1FFFFF, first 2 MiB)
-            // Contains kernel code, data, BSS, TSS, GDT, IDT, RSP0 stack, BootInfo.
+            // 5. Map Kernel Memory in PD[0] (0..2 MiB) and PD[1] (2..4 MiB)
+            // Contains kernel code, data, BSS, TSS, GDT, IDT, RSP0 stack, BootInfo, kernel thread stacks.
             // MUST BE SUPERVISOR ONLY (U/S = 0):
             let kernel_pd_flags = PageFlags::PRESENT.bits() | PageFlags::WRITABLE.bits() | PageFlags::HUGE_2MB.bits();
             core::ptr::write_volatile(pd, 0x0000_0000 | kernel_pd_flags);
+            core::ptr::write_volatile(pd.add(1), 0x0020_0000 | kernel_pd_flags);
         }
 
         Ok(Self { pml4_phys })
@@ -366,7 +411,7 @@ pub fn map_page(
     let pd_idx   = ((virt_addr >> 21) & 0x1FF) as usize;
     let pt_idx   = ((virt_addr >> 12) & 0x1FF) as usize;
 
-    let pml4 = pml4_phys as *mut u64;
+    let pml4 = phys_to_virt_ptr::<u64>(pml4_phys);
 
     let ancestor_flags = PageFlags::PRESENT.bits() | PageFlags::WRITABLE.bits()
         | if flags.contains(PageFlags::USER) { PageFlags::USER.bits() } else { 0 };
@@ -380,7 +425,7 @@ pub fn map_page(
         let frame = allocator.allocate_frame().ok_or(MapError::AllocationFailed)?;
         let addr = frame.start_address;
         unsafe {
-            let ptr = addr as *mut u64;
+            let ptr = phys_to_virt_ptr::<u64>(addr);
             for i in 0..512 { core::ptr::write_volatile(ptr.add(i), 0); }
             core::ptr::write_volatile(pml4.add(pml4_idx), addr | ancestor_flags);
         }
@@ -388,7 +433,7 @@ pub fn map_page(
     };
 
     // 2. PDPT -> PD
-    let pdpt = pdpt_phys as *mut u64;
+    let pdpt = phys_to_virt_ptr::<u64>(pdpt_phys);
     let pdpt_entry = unsafe { core::ptr::read_volatile(pdpt.add(pdpt_idx)) };
     let pd_phys = if pdpt_entry & PageFlags::PRESENT.bits() != 0 {
         unsafe { core::ptr::write_volatile(pdpt.add(pdpt_idx), pdpt_entry | ancestor_flags); }
@@ -397,7 +442,7 @@ pub fn map_page(
         let frame = allocator.allocate_frame().ok_or(MapError::AllocationFailed)?;
         let addr = frame.start_address;
         unsafe {
-            let ptr = addr as *mut u64;
+            let ptr = phys_to_virt_ptr::<u64>(addr);
             for i in 0..512 { core::ptr::write_volatile(ptr.add(i), 0); }
             core::ptr::write_volatile(pdpt.add(pdpt_idx), addr | ancestor_flags);
         }
@@ -405,7 +450,7 @@ pub fn map_page(
     };
 
     // 3. PD -> PT
-    let pd = pd_phys as *mut u64;
+    let pd = phys_to_virt_ptr::<u64>(pd_phys);
     let pd_entry = unsafe { core::ptr::read_volatile(pd.add(pd_idx)) };
     if pd_entry & PageFlags::HUGE_2MB.bits() != 0 {
         return Err(MapError::ConflictingMapping);
@@ -417,7 +462,7 @@ pub fn map_page(
         let frame = allocator.allocate_frame().ok_or(MapError::AllocationFailed)?;
         let addr = frame.start_address;
         unsafe {
-            let ptr = addr as *mut u64;
+            let ptr = phys_to_virt_ptr::<u64>(addr);
             for i in 0..512 { core::ptr::write_volatile(ptr.add(i), 0); }
             core::ptr::write_volatile(pd.add(pd_idx), addr | ancestor_flags);
         }
@@ -425,7 +470,7 @@ pub fn map_page(
     };
 
     // 4. PT -> Leaf
-    let pt = pt_phys as *mut u64;
+    let pt = phys_to_virt_ptr::<u64>(pt_phys);
     let current_pt = unsafe { core::ptr::read_volatile(pt.add(pt_idx)) };
     if current_pt & PageFlags::PRESENT.bits() != 0 {
         if (current_pt & 0x000F_FFFF_FFFF_F000) != phys_addr {
