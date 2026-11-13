@@ -56,9 +56,48 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
   - Append-only non-root ledger update protocol enforcing capability monotonicity ($R_{\text{pkg}} \subseteq R_{\text{caller}}$).
   - Virtual memory hardening: expanded BSS to 64 pages (256 KiB) and mapped 16 physical execution frames (`0x500000`..`0x510000`).
 
+- **Phase 9: Ring 3 Multi-Process Lifecycle & Task Spawner**:
+  - Implemented hardware capability syscalls `OP_TASK_SPAWN(12)`, `OP_TASK_WAIT(13)`, `OP_TASK_EXIT(14)`.
+  - Preemptive round-robin scheduler with Ring 3 context switching (`switch_to_interrupt_frame`).
+- **Phase 9.5: Process Management Suite & Background Execution**:
+  - Hardware process inspection and management syscalls: `OP_TASK_LIST(15)` and `OP_TASK_KILL(16)`.
+  - Comprehensive userland process suite: `proc list`, `proc kill <pid>`, `proc info <pid>`, `proc clean`.
+  - Background workload daemon: `worker` with configurable heartbeats.
+  - Genesis shell background operator `&` (`worker &`) and shell aliases (`ps`, `kill`).
+- **Phase 9.6: Automatic Zombie Reaping & Memory Hardening**:
+  - Supervisor huge page mapping (`PD[0]` & `PD[1]`) across all child VSpaces and 32 KiB kernel stacks.
+  - Shell-level auto-reaper and microkernel-level zombie object destruction.
+- **Phase 9.7: Substrate Domain Separation & Boot Modularity (v0.3.0)**:
+  - Repository partitioned into `kernel/` (Microkernel & Bootloaders) and `os/` (Genesis, libaxiom, userland apps).
+  - Boot Modularity: Microkernel decoupled from userspace binary; UEFI bootloader loads `genesis.bin` from ESP into memory and passes it via `BootInfo`.
+  - 100% OS-agnostic microkernel: third-party OS personalities can boot on Axiom Microkernel simply by supplying `genesis.bin`.
+
+---
+
+## Repository Architecture
+
+```text
+AxiomOS-supreme/
+├── kernel/                  # The Bare-Metal Microkernel Substrate (Ring 0 / Boot)
+│   ├── boot/                # Bootloaders (axiom_boot UEFI, bios MBR/stage2)
+│   └── microkernel/         # axiom_kernel (Capability microkernel, TCB, paging, IPC)
+│
+├── os/                      # AxiomOS Sovereign Userspace (Ring 3)
+│   ├── genesis/             # axiom_genesis (Ring 3 init process & capability shell)
+│   ├── libaxiom/            # Rust capability library & CapGraph structural filesystem
+│   └── userland/            # C/ASM standalone command binaries & C runtime
+│
+├── tools/                   # Disk image forging tools (make_gpt_disk.py)
+├── docs/                    # Architecture guides, ADRs, and Boot Modularity spec
+└── build.sh                 # Unified build & launch orchestrator
+```
+
 ---
 
 ## Production Verification & Sovereign Canvas
+
+### Phase 9.7: Substrate Separation & Boot Modularity Verified (v0.3.0)
+![AxiomOS Phase 9.7 Boot Modularity Verified](gallery/BootModularityVerified.png)
 
 ### Phase 7C: Object-Oriented Structural Graph ("CapGraph"), C/ASM Binaries & Capability Ledger Verified
 ![AxiomOS Phase 7C CapGraph & C/ASM Binaries Verified](gallery/Phase7CCapGraphVerified.png)
@@ -88,11 +127,15 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
 
 ### Build & Run Commands
 ```bash
-# Development Mode (Compiles C/ASM userland, kernel, genesis, and launches QEMU)
+# Full Build & Run (UEFI mode with GOP graphics display)
 ./build.sh
 
-# Production Mode (Comprehensive 54-test suite, preemption stress & screen takeover)
+# Production Mode (Comprehensive selftests & process preemption)
 ./build.sh -prod
+
+# Modular Builds:
+./build.sh -kernel-only -no-run    # Compile only UEFI bootloader & microkernel
+./build.sh -os-only                # Compile only C userland apps & Genesis
 
 # Legacy BIOS Mode (MBR Stage 1 & Stage 2 fallback)
 ./build.sh -bios
@@ -102,12 +145,8 @@ AxiomOS is a sovereign, capability-based microkernel written in Rust and x86-64 
 
 ## Documentation
 - [Architecture Roadmap](docs/02-ARCHITECTURE-ROADMAP.md)
+- [Boot Modularity & Custom OS Personality Guide](docs/08-BOOT-MODULARITY.md)
 - [Sovereign Capability Filesystem ("VaultFS" / "CapFS") Architecture](docs/07-CAPABILITY-FILESYSTEM.md)
 - [ADR Index](docs/05-ADRs/)
-  - [ADR-0007: Preemption Architecture, LAPIC Timer, and Bounded Ring-0 Deferral](docs/05-ADRs/ADR-007.md)
-  - [ADR-0008: Hardware Fast-Path Syscall Gateway, Capability Derivation Tree (CDT), Atomic RPC, and Kernel Boundary Freeze](docs/05-ADRs/ADR-008.md)
-  - [ADR-0009: The Genesis Process (PID 1) & User-Space Capability Runtime (libaxiom)](docs/05-ADRs/ADR-009.md)
-  - [ADR-0010: Sovereign Screen Takeover, Object-Capability Console Subsystem, and Text-Based GUI Canvas](docs/05-ADRs/ADR-010.md)
-  - [ADR-0011: Sovereign Capability Filesystem ("VaultFS"), Authority Keyrings, and Interactive Shell Architecture](docs/05-ADRs/ADR-011.md)
-  - [ADR-0012: Object-Oriented Structural Graph ("CapGraph"), C/ASM Userland Toolchain, and Shell Capability Ledger](docs/05-ADRs/ADR-012.md)
 - [Capability Lifecycle Model](docs/06-CAPABILITY-LIFECYCLE.md)
+

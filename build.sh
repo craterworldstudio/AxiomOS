@@ -68,6 +68,9 @@ if [ "$BIOS_MODE" -eq 0 ]; then
     mkdir -p target/esp/EFI/BOOT
     cp target/x86_64-unknown-uefi/debug/axiom_boot.efi target/esp/EFI/BOOT/BOOTX64.EFI
     cp target/x86_64-unknown-none/debug/axiom_kernel.bin target/esp/axiom_kernel.bin
+    if [ -f target/x86_64-unknown-none/debug/axiom_genesis.bin ]; then
+        cp target/x86_64-unknown-none/debug/axiom_genesis.bin target/esp/genesis.bin
+    fi
 
     UEFI_IMG="target/axiom_mkern.img"
     dd if=/dev/zero of="$UEFI_IMG" bs=1M count=64 status=none
@@ -77,6 +80,9 @@ if [ "$BIOS_MODE" -eq 0 ]; then
     mmd -i "$UEFI_IMG" ::EFI/BOOT 2>/dev/null || true
     mcopy -i "$UEFI_IMG" target/esp/EFI/BOOT/BOOTX64.EFI ::EFI/BOOT/BOOTX64.EFI
     mcopy -i "$UEFI_IMG" target/esp/axiom_kernel.bin ::axiom_kernel.bin
+    if [ -f target/esp/genesis.bin ]; then
+        mcopy -i "$UEFI_IMG" target/esp/genesis.bin ::genesis.bin
+    fi
 
     # Auto-detect OVMF firmware
     OVMF_PATH=""

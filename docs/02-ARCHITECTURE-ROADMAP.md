@@ -143,11 +143,35 @@ We are utilizing a **Laboratory-First Strategy**:
   - Upgrade from 16-bit PIO port polling to PCI AHCI Bus Master DMA, achieving full bus-speed disk throughput.
 
 ### Phase 9: Ring 3 Multi-Process Lifecycle & Task Spawner
-*Status: Planned*
-- [ ] Genesis (PID 1) decoupling: Genesis serves purely as the Master Init and Process Orchestrator.
-- [ ] Capability-based `fork`/`spawn`: Retyping Untyped memory into child TCBs, VSpaces, and CNodes from userland.
-- [ ] Userland Shell Process (PID 2): Running independent interactive terminal sessions without root kernel authority.
-- [ ] Synchronous IPC rendezvous multiplexer routing requests between client processes and server daemons.
+*Status: Completed*
+- [x] Genesis (PID 1) decoupling: Genesis serves as the Master Init and Process Orchestrator.
+- [x] Hardware capability system calls: `OP_TASK_SPAWN(12)`, `OP_TASK_WAIT(13)`, `OP_TASK_EXIT(14)`.
+- [x] Preemptive round-robin scheduler with Ring 3 context switching (`switch_to_interrupt_frame`).
+- [x] Multi-page user address space: code at `0x400000`, data frame at `0x600000`, 64 KiB user stack at `0x7F0000..0x800000`.
+
+### Phase 9.5: Process Management Suite & Background Execution
+*Status: Completed*
+- [x] Hardware process introspection and termination syscalls: `OP_TASK_LIST(15)` and `OP_TASK_KILL(16)`.
+- [x] Full-featured userland process suite: `proc list`, `proc kill <pid>`, `proc info <pid>`, `proc clean`.
+- [x] Background workload daemon: `worker` with configurable iterations and heartbeats.
+- [x] Genesis shell background execution operator `&` (`worker &`), returning to prompt immediately.
+- [x] Shell aliases: `ps` -> `proc list`, `kill <pid>` -> `proc kill <pid>`.
+
+### Phase 9.6: Automatic Zombie Reaping & Memory Hardening
+*Status: Completed*
+- [x] Microkernel memory hardening: mapped supervisor huge pages `PD[0]` (0..2 MiB) and `PD[1]` (2..4 MiB) into all child VSpaces, preventing page faults on high kernel stacks.
+- [x] Expanded kernel stacks to 32 KiB (`KERNEL_STACK_PAGES = 8`).
+- [x] Shell-level automatic background zombie reaper: `reap_background_tasks()` checks terminated tasks on every prompt.
+- [x] Microkernel-level zombie purging: `sys_task_kill` destroys CSpace, VSpace, and TCB objects for dead tasks.
+
+### Phase 9.7: Substrate Domain Separation & Boot Modularity (v0.3.0)
+*Status: Completed*
+- [x] Monorepo restructuring into two clean domains: `kernel/` (Microkernel & Bootloaders) and `os/` (Genesis, libaxiom, userland apps).
+- [x] Boot Modularity: Removed compile-time `include_bytes!` of Genesis from microkernel.
+- [x] UEFI bootloader (`kernel/boot/uefi`) loads `genesis.bin` from ESP into physical `0x2000000` and passes `initrd_base` + `initrd_size` in `BootInfo`.
+- [x] Microkernel is 100% OS-agnostic; third-party operating systems can run on Axiom Microkernel simply by dropping `genesis.bin` on ESP.
+- [x] Data frame collision fix: relocated `argv_table` to `0x480` and `argv_strings` to `0x500`, preventing overlap with `CapBlobContext`.
+- [x] Modular build orchestration: `./build.sh -kernel-only`, `./build.sh -os-only`, `./build.sh -no-run`.
 
 ### Phase 10: Accounts, Authentication & Cryptographic Keyrings
 *Status: Planned*

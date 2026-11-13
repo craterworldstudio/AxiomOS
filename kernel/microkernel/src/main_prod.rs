@@ -2,8 +2,6 @@ use core::panic::PanicInfo;
 use memory::BootInfo;
 use capability::CapHandle;
 
-const GENESIS_BIN: &[u8] = include_bytes!("../../../target/x86_64-unknown-none/debug/axiom_genesis.bin");
-
 
 // ============================================================================
 // DIAGNOSTIC HARNESS
@@ -592,8 +590,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     });
     ktest(b"Genesis Root Capabilities Configured", true);
 
-    // Dynamically load all compiled Genesis binary pages into physical memory
-    let bin_len = GENESIS_BIN.len();
+    // Dynamically load initial OS boot module (initrd / Genesis) into user virtual space 0x400000
+    let (initrd_ptr, bin_len) = unsafe {
+        if (*boot_info).initrd_size > 0 && (*boot_info).initrd_base != 0 {
+            ((*boot_info).initrd_base as *const u8, (*boot_info).initrd_size as usize)
+        } else {
+            panic!("Fatal: No initial OS boot module (genesis.bin) found in BootInfo!");
+        }
+    };
     let num_pages = (bin_len + 4095) / 4096;
     let bss_extra_pages = 64; // 256 KiB headroom for CapGraph and user data
     let total_pages = num_pages + bss_extra_pages;
@@ -605,7 +609,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             let remaining = bin_len - offset;
             let chunk = if remaining > 4096 { 4096 } else { remaining };
             unsafe {
-                core::ptr::copy_nonoverlapping(GENESIS_BIN.as_ptr().add(offset), frame_ptr, chunk);
+                core::ptr::copy_nonoverlapping(initrd_ptr.add(offset), frame_ptr, chunk);
                 if chunk < 4096 {
                     core::ptr::write_bytes(frame_ptr.add(chunk), 0, 4096 - chunk);
                 }

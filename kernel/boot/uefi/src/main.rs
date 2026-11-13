@@ -11,6 +11,8 @@ use gop::*;
 // The kernel entry address in physical memory
 const KERNEL_LOAD_ADDR: u64 = 0x100000;
 const KERNEL_MAX_PAGES: usize = 128; // 512 KiB buffer
+const INITRD_LOAD_ADDR: u64 = 0x2000000; // 32 MiB physical buffer
+const INITRD_MAX_PAGES: usize = 1024; // 4 MiB buffer
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -42,11 +44,13 @@ pub struct BootInfo {
     pub horizontal_resolution: u32,
     pub vertical_resolution: u32,
     pub pixels_per_scan_line: u32,
+    pub initrd_base: u64,
+    pub initrd_size: u64,
 }
 
 static mut BOOT_INFO: BootInfo = BootInfo {
     magic: 0xC0DEB007,
-    version: 0x02,
+    version: 0x03,
     memory_map_ptr: 0,
     memory_map_len: 0,
     memory_map_entry_size: core::mem::size_of::<MemoryMapEntry>() as u64,
@@ -55,6 +59,8 @@ static mut BOOT_INFO: BootInfo = BootInfo {
     horizontal_resolution: 0,
     vertical_resolution: 0,
     pixels_per_scan_line: 0,
+    initrd_base: 0,
+    initrd_size: 0,
 };
 
 // UTF-16 print helper for UEFI ConOut
@@ -183,6 +189,50 @@ pub extern "efiapi" fn efi_main(image_handle: EfiHandle, system_table: *mut EfiS
         }
 
         let _ = (kernel_file.close)(kernel_file);
+
+        // 3b. Locate and Load Initial OS Boot Module (genesis.bin) into 0x2000000
+        let genesis_name: [u16; 12] = [
+            'g' as u16, 'e' as u16, 'n' as u16, 'e' as u16, 's' as u16, 'i' as u16,
+            's' as u16, '.' as u16, 'b' as u16, 'i' as u16, 'n' as u16, 0,
+        ];
+        let mut genesis_file_ptr: *mut EfiFileProtocol = core::ptr::null_mut();
+        let status = (root_dir.open)(
+            root_dir,
+            &raw mut genesis_file_ptr,
+            genesis_name.as_ptr(),
+            EFI_FILE_MODE_READ,
+            0,
+        );
+        if status == EFI_SUCCESS && !genesis_file_ptr.is_null() {
+            let genesis_file = &mut *genesis_file_ptr;
+            let mut initrd_dest: u64 = INITRD_LOAD_ADDR;
+            let alloc_status = (bs.allocate_pages)(
+                EfiAllocateType::AllocateAddress,
+                EfiMemoryType::EfiLoaderData,
+                INITRD_MAX_PAGES,
+                &raw mut initrd_dest,
+            );
+            if alloc_status != EFI_SUCCESS && alloc_status != 0 {
+                print_uefi(con_out, "[WARN] Initrd page allocation returned non-zero\n");
+            }
+            let mut initrd_read_size = INITRD_MAX_PAGES * 4096;
+            let read_status = (genesis_file.read)(
+                genesis_file,
+                &raw mut initrd_read_size,
+                INITRD_LOAD_ADDR as *mut core::ffi::c_void,
+            );
+            if read_status == EFI_SUCCESS {
+                BOOT_INFO.initrd_base = INITRD_LOAD_ADDR;
+                BOOT_INFO.initrd_size = initrd_read_size as u64;
+                print_uefi(con_out, "[AXIOM BOOT] Initial OS Boot Module 'genesis.bin' loaded at 0x2000000.\n");
+            } else {
+                print_uefi(con_out, "[WARN] Failed to read genesis.bin into memory\n");
+            }
+            let _ = (genesis_file.close)(genesis_file);
+        } else {
+            print_uefi(con_out, "[WARN] genesis.bin not found on ESP volume. Proceeding without initial OS module.\n");
+        }
+
         let _ = (root_dir.close)(root_dir);
 
         print_uefi(con_out, "[AXIOM BOOT] Kernel placed at 0x100000. Transitioning to Long Mode Core...\n");
@@ -243,7 +293,7 @@ pub extern "efiapi" fn efi_main(image_handle: EfiHandle, system_table: *mut EfiS
 
         // 5. Transfer BootInfo and E820 map to dedicated physical location 0x6000
         const BOOT_INFO_PHYS: u64 = 0x6000;
-        const E820_MAP_PHYS: u64 = 0x6020;
+        const E820_MAP_PHYS: u64 = 0x6100;
 
         core::ptr::copy_nonoverlapping(
             (&raw const E820_MAP) as *const MemoryMapEntry,

@@ -14,6 +14,8 @@ pub struct BootInfo {
     pub horizontal_resolution: u32,
     pub vertical_resolution: u32,
     pub pixels_per_scan_line: u32,
+    pub initrd_base: u64,
+    pub initrd_size: u64,
 }
 
 #[repr(C)]
@@ -92,6 +94,13 @@ impl BitmapAllocator {
         allocator.reserve_region(0x0000, 0x100000);
         // The Axiom Kernel Image (dynamically sourced from linker!)
         allocator.reserve_region(kernel_start, kernel_end);
+
+        // Reserve Initial OS Boot Module (initrd / Genesis) if present
+        if (*boot_info).initrd_size > 0 && (*boot_info).initrd_base != 0 {
+            let initrd_start = (*boot_info).initrd_base;
+            let initrd_end = initrd_start + (*boot_info).initrd_size;
+            allocator.reserve_region(initrd_start, initrd_end);
+        }
 
         allocator
     }
