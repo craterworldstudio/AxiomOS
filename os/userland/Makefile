@@ -3,7 +3,7 @@ CFLAGS = -m64 -ffreestanding -fno-pie -fno-stack-protector -nostdlib -mno-red-zo
 LDFLAGS = -m elf_x86_64 -T linker.ld
 NASM = nasm
 
-OUT_DIR = ../target/userland_bin
+OUT_DIR = ../../target/userland_bin
 BUILD_DIR = build
 
 ALL_BINS = $(OUT_DIR)/echo.bin $(OUT_DIR)/whoami.bin $(OUT_DIR)/ls.bin $(OUT_DIR)/cat.bin $(OUT_DIR)/axe.bin $(OUT_DIR)/proc.bin $(OUT_DIR)/worker.bin

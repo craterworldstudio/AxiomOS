@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "axiom_boot",
-    "libaxiom",
-    "axiom_genesis",
-    "axiom_kernel"
+    "kernel/boot/uefi",
+    "kernel/microkernel",
+    "os/genesis",
+    "os/libaxiom"
 ]
 resolver = "2"
 

@@ -447,10 +447,10 @@ pub unsafe fn sys_task_spawn(
         core::ptr::copy_nonoverlapping(params.blob_ctx_ptr as *const u8, data_ptr.add(0x40), 1032);
     }
 
-    // Setup argv table (at 0x440) and argv strings (at 0x480)
+    // Setup argv table (at 0x480) and argv strings (at 0x500)
     let argc = core::cmp::min(params.argc as usize, 8);
-    let mut str_offset = 0x480;
-    let argv_table = data_ptr.add(0x440) as *mut u64;
+    let mut str_offset = 0x500;
+    let argv_table = data_ptr.add(0x480) as *mut u64;
 
     for i in 0..argc {
         let arg_src = params.argv_ptrs[i] as *const u8;
@@ -583,7 +583,7 @@ pub unsafe fn sys_task_spawn(
         0x500000,
         0x800000,
         argc as u64,
-        0x600440,
+        0x600480,
         0x600000,
     );
 

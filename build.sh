@@ -11,11 +11,17 @@ set -e
 
 PROD_MODE=0
 BIOS_MODE=0
+KERNEL_ONLY=0
+OS_ONLY=0
+NO_RUN=0
 
 for arg in "$@"; do
     case "$arg" in
         -prod) PROD_MODE=1 ;;
         -bios) BIOS_MODE=1 ;;
+        -kernel-only) KERNEL_ONLY=1 ;;
+        -os-only) OS_ONLY=1 ;;
+        -no-run) NO_RUN=1 ;;
         *) echo "[WARN] Unknown flag: $arg" ;;
     esac
 done
@@ -28,12 +34,19 @@ else
     CARGO_FLAGS=""
 fi
 
-echo "[BUILD] Compiling Standalone C and ASM Userland Binaries..."
-make -C userland
+if [ "$KERNEL_ONLY" -eq 0 ]; then
+    echo "[BUILD] Compiling Standalone C and ASM Userland Binaries..."
+    make -C os/userland
 
-echo "[BUILD] Compiling Genesis Process (axiom_genesis)..."
-cargo build -p axiom_genesis --target x86_64-unknown-none
-objcopy -O binary target/x86_64-unknown-none/debug/axiom_genesis target/x86_64-unknown-none/debug/axiom_genesis.bin
+    echo "[BUILD] Compiling Genesis Process (axiom_genesis)..."
+    cargo build -p axiom_genesis --target x86_64-unknown-none
+    objcopy -O binary target/x86_64-unknown-none/debug/axiom_genesis target/x86_64-unknown-none/debug/axiom_genesis.bin
+fi
+
+if [ "$OS_ONLY" -eq 1 ]; then
+    echo "[OK] AxiomOS Userspace components compiled successfully."
+    exit 0
+fi
 
 echo "[BUILD] Compiling Axiom Kernel..."
 cargo build -p axiom_kernel $CARGO_FLAGS
@@ -86,6 +99,10 @@ if [ "$BIOS_MODE" -eq 0 ]; then
     fi
 
     echo "[OK] Axiom UEFI Image forged successfully ($UEFI_IMG)."
+    if [ "$NO_RUN" -eq 1 ]; then
+        echo "[BUILD] Skipping QEMU run (-no-run flag set)."
+        exit 0
+    fi
     echo "[RUN] Starting AxiomOS under UEFI (Firmware: $OVMF_PATH)..."
     qemu-system-x86_64 \
         -bios "$OVMF_PATH" \
@@ -99,16 +116,20 @@ if [ "$BIOS_MODE" -eq 0 ]; then
 else
     KERNEL_SECTORS=$(( (KERNEL_BYTES + 511) / 512 ))
     echo "[BUILD] Assembling Legacy BIOS Stage 1..."
-    nasm -f bin bootloader/boot.asm -o bootloader/boot.bin
+    nasm -f bin kernel/boot/bios/boot.asm -o kernel/boot/bios/boot.bin
 
     echo "[BUILD] Assembling Legacy BIOS Stage 2..."
-    nasm -f bin bootloader/stage2.asm -DKERNEL_SECTORS=$KERNEL_SECTORS -o bootloader/stage2.bin
+    nasm -f bin kernel/boot/bios/stage2.asm -DKERNEL_SECTORS=$KERNEL_SECTORS -o kernel/boot/bios/stage2.bin
 
     echo "[BUILD] Forging unified legacy disk image..."
-    cat bootloader/boot.bin bootloader/stage2.bin target/x86_64-unknown-none/debug/axiom_kernel.bin > target/disk.img
+    cat kernel/boot/bios/boot.bin kernel/boot/bios/stage2.bin target/x86_64-unknown-none/debug/axiom_kernel.bin > target/disk.img
     dd if=/dev/zero bs=512 count=64 >> target/disk.img 2>/dev/null
 
     echo "[OK] Legacy BIOS Image forged successfully."
+    if [ "$NO_RUN" -eq 1 ]; then
+        echo "[BUILD] Skipping QEMU run (-no-run flag set)."
+        exit 0
+    fi
     echo "[RUN] Starting AxiomOS under Legacy BIOS..."
     qemu-system-x86_64 -drive format=raw,file=target/disk.img
 fi

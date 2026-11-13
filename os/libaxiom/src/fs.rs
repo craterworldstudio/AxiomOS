@@ -122,13 +122,13 @@ pub struct GptPartitionEntry {
 }
 
 // Embedded C and Assembly Binaries compiled from userland/
-pub const ECHO_BIN: &[u8]   = include_bytes!("../../target/userland_bin/echo.bin");
-pub const LS_BIN: &[u8]     = include_bytes!("../../target/userland_bin/ls.bin");
-pub const CAT_BIN: &[u8]    = include_bytes!("../../target/userland_bin/cat.bin");
-pub const WHOAMI_BIN: &[u8] = include_bytes!("../../target/userland_bin/whoami.bin");
-pub const AXE_BIN: &[u8]    = include_bytes!("../../target/userland_bin/axe.bin");
-pub const PROC_BIN: &[u8]   = include_bytes!("../../target/userland_bin/proc.bin");
-pub const WORKER_BIN: &[u8] = include_bytes!("../../target/userland_bin/worker.bin");
+pub const ECHO_BIN: &[u8]   = include_bytes!("../../../target/userland_bin/echo.bin");
+pub const LS_BIN: &[u8]     = include_bytes!("../../../target/userland_bin/ls.bin");
+pub const CAT_BIN: &[u8]    = include_bytes!("../../../target/userland_bin/cat.bin");
+pub const WHOAMI_BIN: &[u8] = include_bytes!("../../../target/userland_bin/whoami.bin");
+pub const AXE_BIN: &[u8]    = include_bytes!("../../../target/userland_bin/axe.bin");
+pub const PROC_BIN: &[u8]   = include_bytes!("../../../target/userland_bin/proc.bin");
+pub const WORKER_BIN: &[u8] = include_bytes!("../../../target/userland_bin/worker.bin");
 
 // Capability Rights Bitflags
 pub const RIGHTS_NONE: u8  = 0b0000;
@@ -240,7 +240,7 @@ pub struct CapBlobContext {
 }
 
 // Static system configuration strings (explicitly null-terminated for C boundary safety)
-const OS_RELEASE: &[u8] = b"NAME=\"AxiomOS Sovereign Core Substrate\"\nVERSION=\"0.2.0-alpha\"\nARCH=\"x86_64\"\nSECURITY=\"Object Capability Graph (CapGraph)\"\nAUTHORITY=\"Zero Ambient Authority (CPL=3)\"\n\0";
+const OS_RELEASE: &[u8] = b"NAME=\"AxiomOS Sovereign Core Substrate\"\nVERSION=\"0.3.0-alpha\"\nARCH=\"x86_64\"\nSECURITY=\"Object Capability Graph (CapGraph)\"\nAUTHORITY=\"Zero Ambient Authority (CPL=3)\"\n\0";
 const MOTD: &[u8] = b"Welcome to AxiomOS.\nAll storage is modeled as an Object-Oriented Structural Graph.\nCommands are standalone C/ASM binaries in /apps/sys.\n\0";
 const README: &[u8] = b"Sovereign Root Workspace\n- apps/sys/  : Standalone executable capability binaries (C/ASM)\n- apps/pkg/  : User and installed capability packages\n- meta/      : System capability ledger and configuration\n- vaults/    : User data vaults (VaultFS)\n- edps/      : Device capability endpoints (console, drives/ata0)\n- srvs/      : Ring 3 system server IPC channels\n\0";
 const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\nproc.bin        console:all,storage:read\nworker.bin      console:write\n\0";

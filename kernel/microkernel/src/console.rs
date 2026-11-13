@@ -243,7 +243,7 @@ impl Console {
             self.write_str("[ AXIOM OS ]");
 
             self.fg_color = 0x00E0E0E0; // Silver White
-            self.write_str("  v0.2.0-alpha   |   ");
+            self.write_str("  v0.3.0-alpha   |   ");
 
             self.fg_color = 0x002EE59D; // Emerald Green
             self.write_str("PID 1: Genesis");

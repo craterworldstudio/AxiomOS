@@ -2,7 +2,7 @@ use core::panic::PanicInfo;
 use memory::BootInfo;
 use capability::CapHandle;
 
-const GENESIS_BIN: &[u8] = include_bytes!("../../target/x86_64-unknown-none/debug/axiom_genesis.bin");
+const GENESIS_BIN: &[u8] = include_bytes!("../../../target/x86_64-unknown-none/debug/axiom_genesis.bin");
 
 
 // ============================================================================

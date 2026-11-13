@@ -4,19 +4,19 @@ version = 4
 
 [[package]]
 name = "axiom_boot"
-version = "0.1.0"
+version = "0.3.0"
 
 [[package]]
 name = "axiom_genesis"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "libaxiom",
 ]
 
 [[package]]
 name = "axiom_kernel"
-version = "0.1.0"
+version = "0.3.0"
 
 [[package]]
 name = "libaxiom"
-version = "0.1.0"
+version = "0.3.0"
