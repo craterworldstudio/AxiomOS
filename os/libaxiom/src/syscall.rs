@@ -19,6 +19,9 @@ pub const OP_TASK_LIST: u64  = 15;
 pub const OP_TASK_KILL: u64  = 16;
 pub const OP_STORAGE_READ: u64   = 20;
 pub const OP_STORAGE_WRITE: u64  = 21;
+pub const OP_CHANNEL_CREATE: u64 = 22;
+pub const OP_CHANNEL_READ: u64   = 23;
+pub const OP_CHANNEL_WRITE: u64  = 24;
 pub const OP_SYS_REBOOT: u64     = 30;
 pub const OP_SYS_SHUTDOWN: u64   = 31;
 pub const OP_KERNEL_PANIC: u64   = 99;
@@ -48,6 +51,7 @@ pub struct TaskSpawnParams {
     pub blob_ctx_ptr: u64,
     pub argc: u64,
     pub argv_ptrs: [u64; 8],
+    pub stdin_cap: u64,
 }
 
 
@@ -195,4 +199,24 @@ pub unsafe fn task_kill(pid: u32) -> Result<(), SyscallError> {
         Err(SyscallError::from_code(res).err().unwrap_or(SyscallError::Unknown(res)))
     }
 }
+
+pub const ROOT_SLOT_STDIN: u64 = 0x100000006;
+
+/// Creates an IPC channel and returns (read_cap, write_cap).
+#[inline(always)]
+pub unsafe fn channel_create() -> Result<(crate::capability::CapHandle, crate::capability::CapHandle), SyscallError> {
+    let mut handles: [u64; 2] = [0, 0];
+    let res = invoke_short(
+        0x100000001, // ROOT_SLOT_CNODE
+        OP_CHANNEL_CREATE,
+        handles.as_mut_ptr() as u64,
+        0,
+    );
+    if res == SYSCALL_OK {
+        Ok((crate::capability::CapHandle(handles[0]), crate::capability::CapHandle(handles[1])))
+    } else {
+        Err(SyscallError::from_code(res).err().unwrap_or(SyscallError::Unknown(res)))
+    }
+}
+
 

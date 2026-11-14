@@ -30,6 +30,7 @@ pub struct CapKeyring {
     pub storage_cap: u64,
     pub console_cap: u64,
     pub user_name: [u8; 32],
+    pub stdin_cap: u64,
 }
 
 #[repr(C)]
@@ -263,6 +264,114 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         return;
     }
 
+    // Check for Shell Pipeline operator `|`
+    if let Some(pipe_idx) = effective_input.find('|') {
+        let left_part = effective_input[..pipe_idx].trim();
+        let right_part = effective_input[pipe_idx + 1..].trim();
+        if left_part.is_empty() || right_part.is_empty() {
+            ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+            println!("axiom: syntax error near unexpected token '|'");
+            ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+            return;
+        }
+
+        // Parse left command & args
+        let mut left_parts = left_part.splitn(2, ' ');
+        let left_raw_cmd = left_parts.next().unwrap_or("");
+        let left_raw_args = left_parts.next().unwrap_or("").trim();
+        let mut left_kill_buf = [0u8; 64];
+        let (left_cmd, left_args) = if left_raw_cmd == "ps" {
+            ("proc", if left_raw_args.is_empty() { "list" } else { left_raw_args })
+        } else if left_raw_cmd == "kill" {
+            let pfx = b"kill ";
+            left_kill_buf[..pfx.len()].copy_from_slice(pfx);
+            let ab = left_raw_args.as_bytes();
+            let ab_len = core::cmp::min(ab.len(), 64 - pfx.len());
+            left_kill_buf[pfx.len()..pfx.len() + ab_len].copy_from_slice(&ab[..ab_len]);
+            let total = pfx.len() + ab_len;
+            ("proc", core::str::from_utf8(&left_kill_buf[..total]).unwrap_or("kill"))
+        } else {
+            (left_raw_cmd, left_raw_args)
+        };
+
+        // Parse right command & args
+        let mut right_parts = right_part.splitn(2, ' ');
+        let right_raw_cmd = right_parts.next().unwrap_or("");
+        let right_raw_args = right_parts.next().unwrap_or("").trim();
+        let mut right_kill_buf = [0u8; 64];
+        let (right_cmd, right_args) = if right_raw_cmd == "ps" {
+            ("proc", if right_raw_args.is_empty() { "list" } else { right_raw_args })
+        } else if right_raw_cmd == "kill" {
+            let pfx = b"kill ";
+            right_kill_buf[..pfx.len()].copy_from_slice(pfx);
+            let ab = right_raw_args.as_bytes();
+            let ab_len = core::cmp::min(ab.len(), 64 - pfx.len());
+            right_kill_buf[pfx.len()..pfx.len() + ab_len].copy_from_slice(&ab[..ab_len]);
+            let total = pfx.len() + ab_len;
+            ("proc", core::str::from_utf8(&right_kill_buf[..total]).unwrap_or("kill"))
+        } else {
+            (right_raw_cmd, right_raw_args)
+        };
+
+        // Create Channel
+        let (read_cap, write_cap) = match unsafe { channel_create() } {
+            Ok(caps) => caps,
+            Err(_) => {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("axiom: failed to create pipeline channel");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return;
+            }
+        };
+
+        // Spawn Left: stdout redirected to write_cap.0
+        let left_pid = match dispatch_binary(left_cmd, left_args, current_map, cwd, cwd_len, is_curr, false, write_cap.0, 0) {
+            Ok(pid) => pid,
+            Err(err_msg) => {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("axiom: {}: {}", left_cmd, err_msg);
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                unsafe {
+                    let _ = libaxiom::syscall::invoke_short(write_cap.0, libaxiom::syscall::OP_DELETE, 0, 0);
+                    let _ = libaxiom::syscall::invoke_short(read_cap.0, libaxiom::syscall::OP_DELETE, 0, 0);
+                }
+                return;
+            }
+        };
+
+        // Spawn Right: stdin redirected to read_cap.0, stdout remains Console
+        let right_pid = match dispatch_binary(right_cmd, right_args, current_map, cwd, cwd_len, is_curr, false, 0, read_cap.0) {
+            Ok(pid) => pid,
+            Err(err_msg) => {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("axiom: {}: {}", right_cmd, err_msg);
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                unsafe {
+                    let _ = libaxiom::syscall::task_kill(left_pid);
+                    let _ = libaxiom::syscall::task_wait(left_pid, core::ptr::null_mut());
+                    let _ = libaxiom::syscall::invoke_short(write_cap.0, libaxiom::syscall::OP_DELETE, 0, 0);
+                    let _ = libaxiom::syscall::invoke_short(read_cap.0, libaxiom::syscall::OP_DELETE, 0, 0);
+                }
+                return;
+            }
+        };
+
+        // Genesis drops its write capability so that left_pid is the sole writer.
+        unsafe {
+            let _ = libaxiom::syscall::invoke_short(write_cap.0, libaxiom::syscall::OP_DELETE, 0, 0);
+        }
+
+        // Wait for both pipeline stages
+        let _ = unsafe { task_wait(left_pid, core::ptr::null_mut()) };
+        let _ = unsafe { task_wait(right_pid, core::ptr::null_mut()) };
+
+        // Clean up read handle from Genesis CNode
+        unsafe {
+            let _ = libaxiom::syscall::invoke_short(read_cap.0, libaxiom::syscall::OP_DELETE, 0, 0);
+        }
+        return;
+    }
+
     // 2. Split command name and arguments
     let mut parts = effective_input.splitn(2, ' ');
     let raw_cmd = parts.next().unwrap_or("");
@@ -344,6 +453,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                                     blob_ctx_ptr: 0,
                                     argc: 2,
                                     argv_ptrs: [arg0.as_ptr() as u64, arg1.as_ptr() as u64, 0, 0, 0, 0, 0, 0],
+                                    stdin_cap: 0x100000006,
                                 };
 
                                 let spawn_res = unsafe { task_spawn(&spawn_params) };
@@ -530,6 +640,20 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         _ => {},
     }
 
+    let _ = dispatch_binary(cmd, arg_str, current_map, cwd, cwd_len, is_curr, is_background, 0, 0);
+}
+
+fn dispatch_binary(
+    cmd: &str,
+    arg_str: &str,
+    current_map: &mut usize,
+    cwd: &mut [u8; 64],
+    cwd_len: &mut usize,
+    is_curr: bool,
+    is_background: bool,
+    custom_console_cap: u64,
+    custom_stdin_cap: u64,
+) -> Result<u32, &'static str> {
     // 4. Resolve binary in bin/ or via path
     let graph = unsafe { &mut GRAPH };
 
@@ -560,7 +684,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                     println!("echo: {}: {}", fname, e);
                 }
             }
-            return;
+            return Ok(0);
         }
     }
 
@@ -588,11 +712,11 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                     token.target_id
                 } else {
                     println!("ls: cannot access '{}': Not a directory", path_arg);
-                    return;
+                    return Err("Not a directory");
                 }
             } else {
                 println!("ls: cannot access '{}': No such file or directory", path_arg);
-                return;
+                return Err("No such file or directory");
             }
         } else {
             *current_map
@@ -695,22 +819,22 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
             println!("{}", cmd);
             println!("Type 'help' for available commands.");
-            return;
+            return Err("Command not found");
         }
     };
 
     let target_node = &graph.nodes[token.target_id];
     if target_node.kind == GraphObjectKind::DirectoryMap {
         println!("axiom: {}: Is a directory", cmd);
-        return;
+        return Err("Is a directory");
     }
     if target_node.kind == GraphObjectKind::DeviceEndpoint {
         println!("axiom: {}: Cannot execute capability endpoint", cmd);
-        return;
+        return Err("Cannot execute endpoint");
     }
     if target_node.kind != GraphObjectKind::Blob {
         println!("axiom: {}: Not an executable binary", cmd);
-        return;
+        return Err("Not an executable binary");
     }
 
     // Security & Execution Guard:
@@ -718,7 +842,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     if (token.rights & libaxiom::fs::RIGHTS_EXEC) == 0 {
         ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
         println!("axiom: {}: Permission denied (not executable)", cmd);
-        return;
+        return Err("Permission denied");
     }
 
     // 2. Reject common non-executable document file extensions
@@ -727,7 +851,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         if cmd.ends_with(ext) {
             ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
             println!("axiom: cannot execute '{}': Exec format error", cmd);
-            return;
+            return Err("Exec format error");
         }
     }
 
@@ -735,17 +859,26 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     let mut username_buf = [0u8; 32];
     username_buf[..4].copy_from_slice(b"root");
 
-    // If command is `cat` or `axe`, resolve target file blob into BLOB_CTX
-    let storage_cap_val = if (cmd == "cat" || cmd == "axe") && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
+    // If command is `cat`, `axe`, or `grep` (with file operand), resolve target file blob into BLOB_CTX
+    let storage_cap_val = if (cmd == "cat" || cmd == "axe" || (cmd == "grep" && !exec_args.is_empty() && exec_args.split_whitespace().count() >= 2)) && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
         unsafe {
             BLOB_CTX.length = 0;
             BLOB_CTX.modified = 0;
 
             let mut file_arg: Option<&str> = None;
+            let mut arg_idx = 0;
             for token in exec_args.split_whitespace() {
                 if !token.starts_with('-') {
-                    file_arg = Some(token);
-                    break;
+                    if cmd == "grep" {
+                        if arg_idx == 1 {
+                            file_arg = Some(token);
+                            break;
+                        }
+                    } else {
+                        file_arg = Some(token);
+                        break;
+                    }
+                    arg_idx += 1;
                 }
             }
 
@@ -763,7 +896,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                     } else if target.kind == GraphObjectKind::DeviceEndpoint {
                         if cmd == "axe" {
                             println!("axe: cannot edit capability endpoint '{}'", fpath);
-                            return;
+                            return Err("Cannot edit endpoint");
                         }
                         if target.data_len > 0 && !target.data_ptr.is_null() {
                             let clen = core::cmp::min(target.data_len, 1024);
@@ -789,7 +922,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                     } else if target.kind == GraphObjectKind::DirectoryMap {
                         if cmd == "axe" {
                             println!("axe: cannot edit directory map '{}'", fpath);
-                            return;
+                            return Err("Cannot edit directory map");
                         }
                         let msg = b"cat: Is a capability directory map (use 'ls' to view entries)\n";
                         BLOB_CTX.data[..msg.len()].copy_from_slice(msg);
@@ -803,12 +936,16 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         &raw const MAP_CTX as u64
     };
 
+    let console_cap_val = if custom_console_cap != 0 { custom_console_cap } else { 0x100000005 };
+    let stdin_cap_val = if custom_stdin_cap != 0 { custom_stdin_cap } else { 0x100000006 };
+
     let keyring = CapKeyring {
         user_id: 0,
         rights: if is_curr { 0b1111 } else { 0b0011 },
         storage_cap: storage_cap_val,
-        console_cap: 0x100000005,
+        console_cap: console_cap_val,
         user_name: username_buf,
+        stdin_cap: stdin_cap_val,
     };
 
     // 6. Prepare argc and argv in memory
@@ -871,6 +1008,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         blob_ctx_ptr: if is_blob { &raw mut BLOB_CTX as u64 } else { 0 },
         argc: argc as u64,
         argv_ptrs: [0; 8],
+        stdin_cap: keyring.stdin_cap,
     };
     for a in 0..core::cmp::min(argc, 8) {
         spawn_params.argv_ptrs[a] = argv_ptrs[a] as u64;
@@ -878,6 +1016,10 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
 
     match unsafe { task_spawn(&spawn_params) } {
         Ok(child_pid) => {
+            if custom_console_cap != 0 || custom_stdin_cap != 0 {
+                return Ok(child_pid);
+            }
+
             if is_background {
                 unsafe {
                     for slot in BG_PIDS.iter_mut() {
@@ -890,7 +1032,7 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 ConsoleWriter::set_color(0x006EBA87, 0x00101418); // Sage Emerald
                 println!("[Spawned background process PID {}]", child_pid);
                 ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
-                return;
+                return Ok(child_pid);
             }
 
             // Wait for child process to finish, retrieving written-back blob data if editing
@@ -922,27 +1064,28 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                     ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
                 }
             }
+
+            // 9. If axe modified the buffer, flush writeback to CapGraph
+            if cmd == "axe" && !exec_args.is_empty() && exec_args != "-dh" {
+                unsafe {
+                    if BLOB_CTX.modified != 0 {
+                        let len = core::cmp::min(BLOB_CTX.length as usize, 1024);
+                        let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
+                        let (res_buf, res_len) = resolve_path(cur_str, exec_args.trim());
+                        if let Ok(res_str) = core::str::from_utf8(&res_buf[..res_len]) {
+                            let _ = graph.write_file(0, res_str, &BLOB_CTX.data[..len]);
+                        }
+                    }
+                }
+            }
+
+            Ok(child_pid)
         },
         Err(err) => {
             ConsoleWriter::set_color(0x00E05555, 0x00101418);
             println!("axiom: failed to spawn task '{}': {:?}", cmd, err);
             ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
-            return;
-        }
-    }
-
-
-    // 9. If axe modified the buffer, flush writeback to CapGraph
-    if cmd == "axe" && !exec_args.is_empty() && exec_args != "-dh" {
-        unsafe {
-            if BLOB_CTX.modified != 0 {
-                let len = core::cmp::min(BLOB_CTX.length as usize, 1024);
-                let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
-                let (res_buf, res_len) = resolve_path(cur_str, exec_args.trim());
-                if let Ok(res_str) = core::str::from_utf8(&res_buf[..res_len]) {
-                    let _ = graph.write_file(0, res_str, &BLOB_CTX.data[..len]);
-                }
-            }
+            Err("Failed to spawn task")
         }
     }
 }

@@ -125,3 +125,55 @@ int axiom_task_kill(uint32_t pid) {
     uint64_t res = axiom_syscall(ROOT_SLOT_TCB, OP_TASK_KILL, (uint64_t)pid, 9);
     return (res == 0) ? 0 : -1;
 }
+
+int axiom_read(char* buf, size_t count) {
+    if (!buf || count == 0) return 0;
+    uint64_t res = axiom_syscall(ROOT_SLOT_STDIN, OP_CHANNEL_READ, (uint64_t)buf, count);
+    return (int)res;
+}
+
+int axiom_getline(char* buf, size_t max_len) {
+    if (!buf || max_len <= 1) return -1;
+    size_t i = 0;
+    while (i < max_len - 1) {
+        char ch;
+        int n = axiom_read(&ch, 1);
+        if (n <= 0) {
+            if (i == 0) return -1;
+            break;
+        }
+        if (ch == '\r') continue;
+        if (ch == '\n') break;
+        buf[i++] = ch;
+    }
+    buf[i] = '\0';
+    return (int)i;
+}
+
+int axiom_channel_create(uint64_t* read_cap, uint64_t* write_cap) {
+    uint64_t handles[2] = {0, 0};
+    uint64_t res = axiom_syscall(ROOT_SLOT_CNODE, OP_CHANNEL_CREATE, (uint64_t)handles, 0);
+    if (res == 0) {
+        if (read_cap) *read_cap = handles[0];
+        if (write_cap) *write_cap = handles[1];
+        return 0;
+    }
+    return -1;
+}
+
+char* strstr(const char* haystack, const char* needle) {
+    if (!needle || !*needle) return (char*)haystack;
+    for (; *haystack; haystack++) {
+        if (*haystack == *needle) {
+            const char* h = haystack;
+            const char* n = needle;
+            while (*h && *n && *h == *n) {
+                h++;
+                n++;
+            }
+            if (!*n) return (char*)haystack;
+        }
+    }
+    return NULL;
+}
+

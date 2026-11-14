@@ -17,6 +17,7 @@ typedef unsigned long  size_t;
 #define ROOT_SLOT_TCB      0x100000003ULL
 #define ROOT_SLOT_UNTYPED  0x100000004ULL
 #define ROOT_SLOT_CONSOLE  0x100000005ULL
+#define ROOT_SLOT_STDIN    0x100000006ULL
 #define ROOT_SLOT_STORAGE  0x100000007ULL
 
 // Syscall Operations
@@ -39,6 +40,9 @@ typedef unsigned long  size_t;
 #define OP_TASK_KILL       16
 #define OP_STORAGE_READ    20
 #define OP_STORAGE_WRITE   21
+#define OP_CHANNEL_CREATE  22
+#define OP_CHANNEL_READ    23
+#define OP_CHANNEL_WRITE   24
 #define OP_SYS_REBOOT      30
 #define OP_SYS_SHUTDOWN    31
 #define OP_KERNEL_PANIC    99
@@ -68,6 +72,7 @@ typedef struct {
     uint64_t storage_cap;
     uint64_t console_cap;
     char     user_name[32];
+    uint64_t stdin_cap;
 } CapKeyring;
 
 // CapGraph directory entry header matching Genesis layout (56 bytes)
@@ -154,6 +159,9 @@ int      axiom_storage_read(uint32_t lba, void* buf);
 int      axiom_storage_write(uint32_t lba, const void* buf);
 int      axiom_task_list(ProcessInfo* list, uint32_t max_count);
 int      axiom_task_kill(uint32_t pid);
+int      axiom_read(char* buf, size_t count);
+int      axiom_getline(char* buf, size_t max_len);
+int      axiom_channel_create(uint64_t* read_cap, uint64_t* write_cap);
 
 // Standard string helpers
 size_t   strlen(const char* s);
@@ -163,5 +171,6 @@ char*    strcpy(char* dest, const char* src);
 char*    strncpy(char* dest, const char* src, size_t n);
 char*    strcat(char* dest, const char* src);
 const char* strchr(const char* s, int c);
+char*    strstr(const char* haystack, const char* needle);
 
 #endif

@@ -6,7 +6,7 @@ NASM = nasm
 OUT_DIR = ../../target/userland_bin
 BUILD_DIR = build
 
-ALL_BINS = $(OUT_DIR)/echo.bin $(OUT_DIR)/whoami.bin $(OUT_DIR)/ls.bin $(OUT_DIR)/cat.bin $(OUT_DIR)/axe.bin $(OUT_DIR)/proc.bin $(OUT_DIR)/worker.bin
+ALL_BINS = $(OUT_DIR)/echo.bin $(OUT_DIR)/whoami.bin $(OUT_DIR)/ls.bin $(OUT_DIR)/cat.bin $(OUT_DIR)/axe.bin $(OUT_DIR)/proc.bin $(OUT_DIR)/worker.bin $(OUT_DIR)/grep.bin
 
 all: $(BUILD_DIR) $(OUT_DIR) $(ALL_BINS)
 
@@ -54,6 +54,11 @@ $(OUT_DIR)/worker.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/worker.c
 	$(CC) $(CFLAGS) -c bin/worker.c -o $(BUILD_DIR)/worker.o
 	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/worker.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/libaxiom.o
 	objcopy -O binary $(BUILD_DIR)/worker.elf $(OUT_DIR)/worker.bin
+
+$(OUT_DIR)/grep.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/grep.c
+	$(CC) $(CFLAGS) -c bin/grep.c -o $(BUILD_DIR)/grep.o
+	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/grep.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/grep.o $(BUILD_DIR)/libaxiom.o
+	objcopy -O binary $(BUILD_DIR)/grep.elf $(OUT_DIR)/grep.bin
 
 clean:
 	rm -rf $(BUILD_DIR) $(OUT_DIR)

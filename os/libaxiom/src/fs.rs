@@ -129,6 +129,7 @@ pub const WHOAMI_BIN: &[u8] = include_bytes!("../../../target/userland_bin/whoam
 pub const AXE_BIN: &[u8]    = include_bytes!("../../../target/userland_bin/axe.bin");
 pub const PROC_BIN: &[u8]   = include_bytes!("../../../target/userland_bin/proc.bin");
 pub const WORKER_BIN: &[u8] = include_bytes!("../../../target/userland_bin/worker.bin");
+pub const GREP_BIN: &[u8]   = include_bytes!("../../../target/userland_bin/grep.bin");
 
 // Capability Rights Bitflags
 pub const RIGHTS_NONE: u8  = 0b0000;
@@ -289,6 +290,7 @@ impl CapGraph {
         self.add_static_blob(apps_sys_id, "axe.bin", AXE_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(apps_sys_id, "proc.bin", PROC_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(apps_sys_id, "worker.bin", WORKER_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "grep.bin", GREP_BIN, RIGHTS_EXEC | RIGHTS_READ);
 
         // Add config files to meta/ Map
         self.add_static_blob(meta_id, "caps.ledger", CAPS_LEDGER, RIGHTS_READ);

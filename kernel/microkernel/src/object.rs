@@ -8,6 +8,7 @@ pub enum ObjectKind {
     VSpace,
     CNode,
     Untyped,
+    Channel,
 }
 
 impl ObjectKind {
@@ -19,6 +20,7 @@ impl ObjectKind {
             ObjectKind::VSpace => (4096, 4096),
             ObjectKind::CNode => (core::mem::size_of::<crate::capability::CNode>(), 8),
             ObjectKind::Untyped => (0, 1),
+            ObjectKind::Channel => (core::mem::size_of::<Channel>(), 8),
             _ => (0, 1),
         }
     }
@@ -308,6 +310,76 @@ impl Endpoint {
             }
             self.recv_queue.push(receiver_ref, object_table);
             None
+        }
+    }
+}
+
+pub const CHANNEL_BUFFER_SIZE: usize = 2048;
+
+pub struct Channel {
+    pub buffer: [u8; CHANNEL_BUFFER_SIZE],
+    pub head: usize,
+    pub tail: usize,
+    pub count: usize,
+    pub writer_closed: bool,
+    pub send_queue: WaitQueue,
+    pub recv_queue: WaitQueue,
+}
+
+impl Channel {
+    pub const fn new() -> Self {
+        Self {
+            buffer: [0; CHANNEL_BUFFER_SIZE],
+            head: 0,
+            tail: 0,
+            count: 0,
+            writer_closed: false,
+            send_queue: WaitQueue::empty(),
+            recv_queue: WaitQueue::empty(),
+        }
+    }
+
+    pub fn write_byte(&mut self, b: u8) -> bool {
+        if self.count >= CHANNEL_BUFFER_SIZE {
+            return false;
+        }
+        self.buffer[self.tail] = b;
+        self.tail = (self.tail + 1) % CHANNEL_BUFFER_SIZE;
+        self.count += 1;
+        true
+    }
+
+    pub fn read_byte(&mut self) -> Option<u8> {
+        if self.count == 0 {
+            return None;
+        }
+        let b = self.buffer[self.head];
+        self.head = (self.head + 1) % CHANNEL_BUFFER_SIZE;
+        self.count -= 1;
+        Some(b)
+    }
+
+    pub fn close_writer(&mut self, object_table: &ObjectTable) {
+        self.writer_closed = true;
+        // Wake all waiting readers so they hit EOF
+        while let Some(recv_ref) = self.recv_queue.pop(object_table) {
+            if let Some((_, phys_recv)) = object_table.resolve(recv_ref) {
+                let recv_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_recv);
+                unsafe {
+                    core::ptr::write(&raw mut (*recv_ptr).state, ThreadState::Ready);
+                    crate::scheduler::SCHEDULER.enqueue(recv_ref);
+                }
+            }
+        }
+        // Wake any blocked writers
+        while let Some(send_ref) = self.send_queue.pop(object_table) {
+            if let Some((_, phys_send)) = object_table.resolve(send_ref) {
+                let send_ptr = crate::memory::phys_to_virt_ptr::<TCB>(phys_send);
+                unsafe {
+                    core::ptr::write(&raw mut (*send_ptr).state, ThreadState::Ready);
+                    crate::scheduler::SCHEDULER.enqueue(send_ref);
+                }
+            }
         }
     }
 }

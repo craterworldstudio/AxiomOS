@@ -19,6 +19,9 @@ pub const OP_TASK_LIST: u64  = 15;
 pub const OP_TASK_KILL: u64  = 16;
 pub const OP_STORAGE_READ: u64   = 20;
 pub const OP_STORAGE_WRITE: u64  = 21;
+pub const OP_CHANNEL_CREATE: u64 = 22;
+pub const OP_CHANNEL_READ: u64   = 23;
+pub const OP_CHANNEL_WRITE: u64  = 24;
 pub const OP_SYS_REBOOT: u64     = 30;
 pub const OP_SYS_SHUTDOWN: u64   = 31;
 pub const OP_KERNEL_PANIC: u64   = 99;
@@ -48,6 +51,7 @@ pub struct TaskSpawnParams {
     pub blob_ctx_ptr: u64,
     pub argc: u64,
     pub argv_ptrs: [u64; 8],
+    pub stdin_cap: u64,
 }
 
 #[repr(C)]
@@ -58,6 +62,7 @@ pub struct CapKeyring {
     pub storage_cap: u64,
     pub console_cap: u64,
     pub user_name: [u8; 32],
+    pub stdin_cap: u64,
 }
 
 pub static mut NEXT_PID: u32 = 2;
@@ -438,6 +443,7 @@ pub unsafe fn sys_task_spawn(
         storage_cap: 0x600040,
         console_cap: params.console_cap,
         user_name: params.user_name,
+        stdin_cap: params.stdin_cap,
     };
     core::ptr::write(keyring_dst, child_keyring);
 
@@ -550,9 +556,32 @@ pub unsafe fn sys_task_spawn(
         rights: Rights::ALL,
     });
 
-    if let Some(c5) = &cnode.slots[5].capability {
+    // Slot 5 (STDOUT / Output):
+    if params.console_cap != 0 {
+        let h5 = CapHandle(params.console_cap);
+        let s5 = h5.index() as usize;
+        if s5 < CNODE_SLOTS && cnode.slots[s5].is_valid_generation(h5.generation()) {
+            if let Some(c5) = &cnode.slots[s5].capability {
+                child_cnode.slots[5].insert(*c5);
+            }
+        }
+    } else if let Some(c5) = &cnode.slots[5].capability {
         child_cnode.slots[5].insert(*c5);
     }
+
+    // Slot 6 (STDIN / Input):
+    if params.stdin_cap != 0 {
+        let h6 = CapHandle(params.stdin_cap);
+        let s6 = h6.index() as usize;
+        if s6 < CNODE_SLOTS && cnode.slots[s6].is_valid_generation(h6.generation()) {
+            if let Some(c6) = &cnode.slots[s6].capability {
+                child_cnode.slots[6].insert(*c6);
+            }
+        }
+    } else if let Some(c6) = &cnode.slots[6].capability {
+        child_cnode.slots[6].insert(*c6);
+    }
+
     if let Some(c7) = &cnode.slots[7].capability {
         child_cnode.slots[7].insert(*c7);
     }
@@ -611,6 +640,23 @@ pub unsafe fn sys_task_exit(
     crate::serial_print(" exited with code ");
     crate::serial_print_hex(exit_code);
     crate::serial_print("\n");
+
+    // Close any Channel write capabilities held by this exiting task
+    if let Some(cspace_ref) = caller_tcb.cspace {
+        if let Some((_, cnode_phys)) = object_table.resolve(cspace_ref) {
+            let caller_cnode = &mut *(crate::memory::phys_to_virt_ptr::<CNode>(cnode_phys));
+            for s in 0..CNODE_SLOTS {
+                if let Some(cap) = &caller_cnode.slots[s].capability {
+                    if cap.kind == ObjectKind::Channel && cap.rights.contains(Rights::WRITE) {
+                        if let Some((_, chan_phys)) = object_table.resolve(cap.object) {
+                            let chan = &mut *(crate::memory::phys_to_virt_ptr::<crate::object::Channel>(chan_phys));
+                            chan.close_writer(object_table);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     if let Some(parent_ref) = caller_tcb.parent {
         if let Some((_, parent_phys)) = object_table.resolve(parent_ref) {
@@ -773,6 +819,23 @@ pub unsafe fn sys_task_kill(
     crate::serial_print_hex(caller_tcb.pid as u64);
     crate::serial_print("\n");
 
+    // Close any Channel write capabilities held by the killed task
+    if let Some(cspace_ref) = target_tcb.cspace {
+        if let Some((_, cnode_phys)) = object_table.resolve(cspace_ref) {
+            let target_cnode = &mut *(crate::memory::phys_to_virt_ptr::<CNode>(cnode_phys));
+            for s in 0..CNODE_SLOTS {
+                if let Some(cap) = &target_cnode.slots[s].capability {
+                    if cap.kind == ObjectKind::Channel && cap.rights.contains(Rights::WRITE) {
+                        if let Some((_, chan_phys)) = object_table.resolve(cap.object) {
+                            let chan = &mut *(crate::memory::phys_to_virt_ptr::<crate::object::Channel>(chan_phys));
+                            chan.close_writer(object_table);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Unblock parent if waiting
     if let Some(parent_ref) = target_tcb.parent {
         if let Some((_, parent_phys)) = object_table.resolve(parent_ref) {
@@ -858,6 +921,66 @@ pub extern "C" fn sys_invoke_handler(
                 Ok(()) => SYSCALL_OK,
                 Err(err) => err,
             };
+        },
+        OP_CHANNEL_CREATE => {
+            if !cap.rights.contains(Rights::WRITE) && !cap.rights.contains(Rights::ALL) {
+                return ERR_INVALID_RIGHTS;
+            }
+
+            let frame = match unsafe { crate::memory::allocate_frame() } {
+                Some(f) => f,
+                None => return 0xFFFFFFFF_00000001,
+            };
+
+            let channel_ptr = crate::memory::phys_to_virt_ptr::<crate::object::Channel>(frame.start_address);
+            unsafe {
+                core::ptr::write(channel_ptr, crate::object::Channel::new());
+            }
+
+            let channel_ref = match object_table.register_object(ObjectKind::Channel, frame.start_address) {
+                Some(r) => r,
+                None => {
+                    if let Some(alloc) = unsafe { crate::memory::KERNEL_FRAME_ALLOCATOR.as_mut() } {
+                        alloc.deallocate_frame(frame);
+                    }
+                    return ERR_CNODE_FULL;
+                }
+            };
+
+            let read_slot = match cnode.find_free_slot() {
+                Some(s) => s,
+                None => return ERR_CNODE_FULL,
+            };
+            cnode.slots[read_slot].insert(Capability {
+                object: channel_ref,
+                kind: ObjectKind::Channel,
+                rights: Rights::READ,
+            });
+            let read_handle = CapHandle::new(read_slot as u32, cnode.slots[read_slot].generation);
+
+            let write_slot = match cnode.find_free_slot() {
+                Some(s) => s,
+                None => {
+                    let _ = cnode.delete(read_slot);
+                    return ERR_CNODE_FULL;
+                }
+            };
+            cnode.slots[write_slot].insert(Capability {
+                object: channel_ref,
+                kind: ObjectKind::Channel,
+                rights: Rights::WRITE,
+            });
+            let write_handle = CapHandle::new(write_slot as u32, cnode.slots[write_slot].generation);
+
+            if arg1 != 0 && arg1 < 0x0000_8000_0000_0000 {
+                let out_ptr = arg1 as *mut u64;
+                unsafe {
+                    core::ptr::write(out_ptr, read_handle.0);
+                    core::ptr::write(out_ptr.add(1), write_handle.0);
+                }
+            }
+
+            return SYSCALL_OK;
         },
         _ => {}
     }
@@ -1077,6 +1200,137 @@ pub extern "C" fn sys_invoke_handler(
                 },
                 OP_TASK_KILL => {
                     unsafe { sys_task_kill(caller_tcb, object_table, arg1 as u32, arg2) }
+                },
+                _ => ERR_UNSUPPORTED_OP,
+            }
+        },
+        ObjectKind::Channel => {
+            let channel = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::object::Channel>(phys_addr)) };
+
+            match operation {
+                OP_CONSOLE_WRITE => {
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let len = if arg2 != 0 { core::cmp::min(arg2 as usize, 8) } else { 0 };
+                    if len > 0 {
+                        let bytes = arg1.to_le_bytes();
+                        for i in 0..len {
+                            while !channel.write_byte(bytes[i]) {
+                                while let Some(r) = channel.recv_queue.pop(object_table) {
+                                    if let Some((_, r_phys)) = object_table.resolve(r) {
+                                        let r_tcb = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(r_phys)) };
+                                        r_tcb.state = crate::thread::ThreadState::Ready;
+                                        unsafe { crate::scheduler::SCHEDULER.enqueue_front(r); }
+                                    }
+                                }
+                                caller_tcb.state = crate::thread::ThreadState::BlockedSend;
+                                channel.send_queue.push(caller_ref, object_table);
+                                unsafe { crate::scheduler::yield_thread(); }
+                            }
+                        }
+                    } else {
+                        let byte = arg1 as u8;
+                        while !channel.write_byte(byte) {
+                            while let Some(r) = channel.recv_queue.pop(object_table) {
+                                if let Some((_, r_phys)) = object_table.resolve(r) {
+                                    let r_tcb = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(r_phys)) };
+                                    r_tcb.state = crate::thread::ThreadState::Ready;
+                                    unsafe { crate::scheduler::SCHEDULER.enqueue_front(r); }
+                                }
+                            }
+                            caller_tcb.state = crate::thread::ThreadState::BlockedSend;
+                            channel.send_queue.push(caller_ref, object_table);
+                            unsafe { crate::scheduler::yield_thread(); }
+                        }
+                    }
+
+                    while let Some(r) = channel.recv_queue.pop(object_table) {
+                        if let Some((_, r_phys)) = object_table.resolve(r) {
+                            let r_tcb = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(r_phys)) };
+                            r_tcb.state = crate::thread::ThreadState::Ready;
+                            unsafe { crate::scheduler::SCHEDULER.enqueue_front(r); }
+                        }
+                    }
+                    SYSCALL_OK
+                },
+                OP_CONSOLE_COLOR | OP_CONSOLE_CLEAR | OP_CONSOLE_SET_CURSOR => {
+                    SYSCALL_OK
+                },
+                OP_CHANNEL_WRITE => {
+                    if !cap.rights.contains(Rights::WRITE) { return ERR_INVALID_RIGHTS; }
+                    let user_buf = arg1 as *const u8;
+                    let count = arg2 as usize;
+                    if user_buf.is_null() || (user_buf as u64) >= 0x0000_8000_0000_0000 || count == 0 {
+                        return 0;
+                    }
+
+                    let mut written = 0;
+                    while written < count {
+                        let byte = unsafe { *user_buf.add(written) };
+                        while !channel.write_byte(byte) {
+                            while let Some(r) = channel.recv_queue.pop(object_table) {
+                                if let Some((_, r_phys)) = object_table.resolve(r) {
+                                    let r_tcb = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(r_phys)) };
+                                    r_tcb.state = crate::thread::ThreadState::Ready;
+                                    unsafe { crate::scheduler::SCHEDULER.enqueue_front(r); }
+                                }
+                            }
+                            caller_tcb.state = crate::thread::ThreadState::BlockedSend;
+                            channel.send_queue.push(caller_ref, object_table);
+                            unsafe { crate::scheduler::yield_thread(); }
+                        }
+                        written += 1;
+                    }
+
+                    while let Some(r) = channel.recv_queue.pop(object_table) {
+                        if let Some((_, r_phys)) = object_table.resolve(r) {
+                            let r_tcb = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(r_phys)) };
+                            r_tcb.state = crate::thread::ThreadState::Ready;
+                            unsafe { crate::scheduler::SCHEDULER.enqueue_front(r); }
+                        }
+                    }
+
+                    written as u64
+                },
+                OP_CHANNEL_READ => {
+                    if !cap.rights.contains(Rights::READ) { return ERR_INVALID_RIGHTS; }
+                    let user_buf = arg1 as *mut u8;
+                    let max_count = arg2 as usize;
+                    if user_buf.is_null() || (user_buf as u64) >= 0x0000_8000_0000_0000 || max_count == 0 {
+                        return 0;
+                    }
+
+                    loop {
+                        if channel.count > 0 {
+                            let to_read = core::cmp::min(channel.count, max_count);
+                            let mut read_bytes = 0;
+                            while read_bytes < to_read {
+                                if let Some(b) = channel.read_byte() {
+                                    unsafe { *user_buf.add(read_bytes) = b; }
+                                    read_bytes += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            while let Some(w) = channel.send_queue.pop(object_table) {
+                                if let Some((_, w_phys)) = object_table.resolve(w) {
+                                    let w_tcb = unsafe { &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(w_phys)) };
+                                    w_tcb.state = crate::thread::ThreadState::Ready;
+                                    unsafe { crate::scheduler::SCHEDULER.enqueue_front(w); }
+                                }
+                            }
+
+                            return read_bytes as u64;
+                        }
+
+                        if channel.writer_closed {
+                            return 0;
+                        }
+
+                        caller_tcb.state = crate::thread::ThreadState::BlockedReceive;
+                        channel.recv_queue.push(caller_ref, object_table);
+                        unsafe { crate::scheduler::yield_thread(); }
+                    }
                 },
                 _ => ERR_UNSUPPORTED_OP,
             }
