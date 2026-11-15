@@ -183,6 +183,85 @@ pub fn kernel_panic(exception: &str, error_code: u64, frame: &ExceptionStackFram
     }
 }
 
+pub unsafe fn handle_user_fault(
+    exception_name: &str,
+    exit_code: u64,
+    frame: &ExceptionStackFrame,
+    cr2: u64,
+) -> ! {
+    let rip = frame.instruction_pointer;
+    let rsp = frame.stack_pointer;
+
+    crate::serial_print("[USER FAULT CONTAINED] ");
+    crate::serial_print(exception_name);
+    crate::serial_print(" RIP: ");
+    crate::serial_print_hex(rip);
+    crate::serial_print(" RSP: ");
+    crate::serial_print_hex(rsp);
+    if cr2 != 0 {
+        crate::serial_print(" CR2: ");
+        crate::serial_print_hex(cr2);
+    }
+    crate::serial_print("\n");
+
+    // Restore BOOT_CR3 to guarantee valid kernel address space
+    if crate::memory::BOOT_CR3 != 0 {
+        core::arch::asm!("mov cr3, {}", in(reg) crate::memory::BOOT_CR3, options(nomem, nostack));
+    }
+
+    let sched = &mut crate::scheduler::SCHEDULER;
+    let object_table = &crate::capability::KERNEL_OBJECT_TABLE;
+
+    if let Some(current_ref) = sched.current {
+        if let Some((_, phys)) = object_table.resolve(current_ref) {
+            let tcb = crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(phys);
+            core::ptr::write(&raw mut (*tcb).state, crate::thread::ThreadState::Terminated);
+            core::ptr::write(&raw mut (*tcb).exit_code, exit_code);
+
+            crate::serial_print("[KERNEL] Faulting task PID ");
+            crate::serial_print_hex((*tcb).pid as u64);
+            crate::serial_print(" terminated with exit_code ");
+            crate::serial_print_hex(exit_code);
+            crate::serial_print("\n");
+
+            // Close any Channel write capabilities held by this faulting task
+            if let Some(cspace_ref) = (*tcb).cspace {
+                if let Some((_, cnode_phys)) = object_table.resolve(cspace_ref) {
+                    let cnode = &mut *(crate::memory::phys_to_virt_ptr::<crate::capability::CNode>(cnode_phys));
+                    for s in 0..crate::capability::CNODE_SLOTS {
+                        if let Some(cap) = &cnode.slots[s].capability {
+                            if cap.kind == crate::object::ObjectKind::Channel && cap.rights.contains(crate::capability::Rights::WRITE) {
+                                if let Some((_, chan_phys)) = object_table.resolve(cap.object) {
+                                    let chan = &mut *(crate::memory::phys_to_virt_ptr::<crate::object::Channel>(chan_phys));
+                                    chan.close_writer(object_table);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Wake up waiting parent task (e.g. Genesis)
+            if let Some(parent_ref) = (*tcb).parent {
+                if let Some((_, parent_phys)) = object_table.resolve(parent_ref) {
+                    let parent_tcb = &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(parent_phys));
+                    if parent_tcb.state == crate::thread::ThreadState::BlockedReceive {
+                        parent_tcb.state = crate::thread::ThreadState::Ready;
+                        sched.enqueue_front(parent_ref);
+                    }
+                }
+            }
+        }
+    }
+
+    // Yield execution to the next runnable thread (Genesis)
+    crate::scheduler::yield_thread();
+
+    loop {
+        core::arch::asm!("cli; hlt");
+    }
+}
+
 global_asm!(
     ".global divide_by_zero_stub",
     "divide_by_zero_stub:",
@@ -195,6 +274,9 @@ global_asm!(
 
 #[no_mangle]
 pub extern "C" fn divide_by_zero_handler(frame: &ExceptionStackFrame, error_code: u64) {
+    if (frame.code_segment & 3) == 3 {
+        unsafe { handle_user_fault("DIVIDE BY ZERO FAULT (#0)", 136, frame, 0); }
+    }
     kernel_panic("DIVIDE BY ZERO FAULT (#0)", error_code, frame, 0);
 }
 
@@ -210,6 +292,9 @@ global_asm!(
 
 #[no_mangle]
 pub extern "C" fn invalid_opcode_handler(frame: &ExceptionStackFrame, error_code: u64) {
+    if (frame.code_segment & 3) == 3 {
+        unsafe { handle_user_fault("INVALID OPCODE FAULT (#6)", 132, frame, 0); }
+    }
     kernel_panic("INVALID OPCODE FAULT (#6)", error_code, frame, 0);
 }
 
@@ -246,6 +331,9 @@ global_asm!(
 
 #[no_mangle]
 pub extern "C" fn general_protection_fault_handler(frame: &ExceptionStackFrame, error_code: u64) {
+    if (frame.code_segment & 3) == 3 {
+        unsafe { handle_user_fault("GENERAL PROTECTION FAULT (#13)", 139, frame, 0); }
+    }
     kernel_panic("GENERAL PROTECTION FAULT (#13)", error_code, frame, 0);
 }
 
@@ -294,7 +382,7 @@ pub extern "C" fn page_fault_handler(frame: *mut ExceptionStackFrame, cr2: u64, 
             crate::serial_print_hex(*sp.add(3));
             crate::serial_print("\n");
         }
-        let is_user = (error_code & 4) != 0;
+        let is_user = (error_code & 4) != 0 || ((*frame).code_segment & 3) == 3;
         let is_present = (error_code & 1) != 0;
         let is_read = (error_code & 2) == 0;
 
@@ -304,29 +392,15 @@ pub extern "C" fn page_fault_handler(frame: *mut ExceptionStackFrame, cr2: u64, 
             USER_PAGE_FAULT_TRAPPED = true;
             ISOLATION_TEST_PASSED = true;
 
-            // Immediately restore BOOT_CR3 so the kernel runs purely on boot address space
-            if crate::memory::BOOT_CR3 != 0 {
-                core::arch::asm!("mov cr3, {}", in(reg) crate::memory::BOOT_CR3, options(nomem, nostack));
-            }
-
             crate::ktest(b"Isolation: Present Supervisor Page Inaccessible", true);
             crate::ktest(b"Isolation: CR2==0x100000, P=1, U/S=1, W/R=0", true);
-
-            // Safely terminate the faulting thread through explicit scheduler state
-            if let Some(current_ref) = crate::scheduler::SCHEDULER.current {
-                let object_table = &crate::capability::KERNEL_OBJECT_TABLE;
-                if let Some((_, phys)) = object_table.resolve(current_ref) {
-                    let tcb = phys as *mut crate::thread::TCB;
-                    core::ptr::write(&raw mut (*tcb).state, crate::thread::ThreadState::Terminated);
-                }
-            }
-
             crate::ktest(b"Isolation: Faulting Thread Safely Terminated", true);
 
-            // Yield execution to the next ready thread; do not advance RIP or resume faulting code
-            crate::scheduler::yield_thread();
+            handle_user_fault("PAGE FAULT (#14) [ISOLATION VERIFIED]", 139, &*frame, cr2);
+        }
 
-            loop { core::arch::asm!("cli; hlt"); }
+        if is_user {
+            handle_user_fault("PAGE FAULT (#14)", 139, &*frame, cr2);
         }
 
         kernel_panic("PAGE FAULT (#14)   ", error_code, &*frame, cr2);
@@ -585,6 +659,54 @@ pub extern "C" fn timer_interrupt_handler(rsp: u64, cs: u64) -> u64 {
         // update thread states consistently, switch CR3 as needed, and resume.
         let sched = &mut crate::scheduler::SCHEDULER;
         let object_table = &crate::capability::KERNEL_OBJECT_TABLE;
+
+        // Check for Ctrl+C (ASCII 3) on keyboard while user thread is executing
+        let console = &raw mut crate::console::CONSOLE;
+        let ch = (*console).read_char();
+        if ch == 3 {
+            if let Some(prev_ref) = sched.current {
+                if let Some((_, prev_phys)) = object_table.resolve(prev_ref) {
+                    let prev_tcb = crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(prev_phys);
+                    // Do not terminate Genesis root shell (PID 1) on Ctrl+C; only child foreground tasks
+                    if (*prev_tcb).pid > 1 {
+                        crate::serial_print("[KERNEL] Process PID ");
+                        crate::serial_print_hex((*prev_tcb).pid as u64);
+                        crate::serial_print(" interrupted by SIGINT (Ctrl+C)\n");
+
+                        core::ptr::write(&raw mut (*prev_tcb).state, crate::thread::ThreadState::Terminated);
+                        core::ptr::write(&raw mut (*prev_tcb).exit_code, 130);
+
+                        // Close write channels held by interrupted task
+                        if let Some(cspace_ref) = (*prev_tcb).cspace {
+                            if let Some((_, cnode_phys)) = object_table.resolve(cspace_ref) {
+                                let cnode = &mut *(crate::memory::phys_to_virt_ptr::<crate::capability::CNode>(cnode_phys));
+                                for s in 0..crate::capability::CNODE_SLOTS {
+                                    if let Some(cap) = &cnode.slots[s].capability {
+                                        if cap.kind == crate::object::ObjectKind::Channel && cap.rights.contains(crate::capability::Rights::WRITE) {
+                                            if let Some((_, chan_phys)) = object_table.resolve(cap.object) {
+                                                let chan = &mut *(crate::memory::phys_to_virt_ptr::<crate::object::Channel>(chan_phys));
+                                                chan.close_writer(object_table);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Wake up waiting parent (Genesis)
+                        if let Some(parent_ref) = (*prev_tcb).parent {
+                            if let Some((_, parent_phys)) = object_table.resolve(parent_ref) {
+                                let parent_tcb = &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(parent_phys));
+                                if parent_tcb.state == crate::thread::ThreadState::BlockedReceive {
+                                    parent_tcb.state = crate::thread::ThreadState::Ready;
+                                    sched.enqueue_front(parent_ref);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(prev_ref) = sched.current {
             if let Some((_, prev_phys)) = object_table.resolve(prev_ref) {

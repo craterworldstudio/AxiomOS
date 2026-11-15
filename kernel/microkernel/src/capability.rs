@@ -680,6 +680,39 @@ pub unsafe fn sys_task_wait(
     out_blob_ptr: *mut u8,
 ) -> u64 {
     loop {
+        // Check if user pressed Ctrl+C while waiting for foreground task
+        let console = &raw mut crate::console::CONSOLE;
+        let ch = (*console).read_char();
+        if ch == 3 {
+            crate::serial_print("[KERNEL] Foreground task PID ");
+            crate::serial_print_hex(target_pid as u64);
+            crate::serial_print(" interrupted by SIGINT (Ctrl+C)\n");
+
+            if let Some((_, child_phys)) = object_table.find_tcb_by_pid(target_pid) {
+                let child_tcb = &mut *(crate::memory::phys_to_virt_ptr::<crate::thread::TCB>(child_phys));
+                child_tcb.state = crate::thread::ThreadState::Terminated;
+                child_tcb.exit_code = 130;
+
+                // Close write channels held by child
+                if let Some(cspace_ref) = child_tcb.cspace {
+                    if let Some((_, cnode_phys)) = object_table.resolve(cspace_ref) {
+                        let child_cnode = &mut *(crate::memory::phys_to_virt_ptr::<CNode>(cnode_phys));
+                        for s in 0..CNODE_SLOTS {
+                            if let Some(cap) = &child_cnode.slots[s].capability {
+                                if cap.kind == ObjectKind::Channel && cap.rights.contains(Rights::WRITE) {
+                                    if let Some((_, chan_phys)) = object_table.resolve(cap.object) {
+                                        let chan = &mut *(crate::memory::phys_to_virt_ptr::<crate::object::Channel>(chan_phys));
+                                        chan.close_writer(object_table);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
         let (child_ref, child_phys) = match object_table.find_tcb_by_pid(target_pid) {
             Some(c) => c,
             None => return ERR_INVALID_HANDLE,

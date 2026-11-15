@@ -6,7 +6,7 @@ NASM = nasm
 OUT_DIR = ../../target/userland_bin
 BUILD_DIR = build
 
-ALL_BINS = $(OUT_DIR)/echo.bin $(OUT_DIR)/whoami.bin $(OUT_DIR)/ls.bin $(OUT_DIR)/cat.bin $(OUT_DIR)/axe.bin $(OUT_DIR)/proc.bin $(OUT_DIR)/worker.bin $(OUT_DIR)/grep.bin
+ALL_BINS = $(OUT_DIR)/echo.bin $(OUT_DIR)/whoami.bin $(OUT_DIR)/ls.bin $(OUT_DIR)/cat.bin $(OUT_DIR)/axe.bin $(OUT_DIR)/proc.bin $(OUT_DIR)/worker.bin $(OUT_DIR)/grep.bin $(OUT_DIR)/crash.bin
 
 all: $(BUILD_DIR) $(OUT_DIR) $(ALL_BINS)
 
@@ -59,6 +59,11 @@ $(OUT_DIR)/grep.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/grep.c
 	$(CC) $(CFLAGS) -c bin/grep.c -o $(BUILD_DIR)/grep.o
 	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/grep.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/grep.o $(BUILD_DIR)/libaxiom.o
 	objcopy -O binary $(BUILD_DIR)/grep.elf $(OUT_DIR)/grep.bin
+
+$(OUT_DIR)/crash.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/crash.c
+	$(CC) $(CFLAGS) -c bin/crash.c -o $(BUILD_DIR)/crash.o
+	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/crash.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/crash.o $(BUILD_DIR)/libaxiom.o
+	objcopy -O binary $(BUILD_DIR)/crash.elf $(OUT_DIR)/crash.bin
 
 clean:
 	rm -rf $(BUILD_DIR) $(OUT_DIR)

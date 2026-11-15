@@ -1052,6 +1052,8 @@ fn dispatch_binary(
                             println!("[Process PID {} crashed: Floating Point Exception / Divide by Zero (#0)]", child_pid);
                         } else if exit_code == 132 {
                             println!("[Process PID {} crashed: Illegal Instruction (#6)]", child_pid);
+                        } else if exit_code == 130 {
+                            println!("^C");
                         } else {
                             println!("[Process PID {} exited with code {}]", child_pid, exit_code);
                         }
