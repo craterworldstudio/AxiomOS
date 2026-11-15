@@ -37,6 +37,10 @@ pub struct TCB {
     pub data_frame_phys: u64,
     pub exit_code: u64,
     pub name: [u8; 32],
+
+    // Userland Dynamic Heap Allocator State
+    pub heap_start: u64,
+    pub heap_brk: u64,
 }
 
 impl TCB {

@@ -7,6 +7,7 @@ typedef unsigned short uint16_t;
 typedef unsigned char  uint8_t;
 typedef long           int64_t;
 typedef int            int32_t;
+typedef long           intptr_t;
 typedef unsigned long  size_t;
 
 #define NULL ((void*)0)
@@ -38,6 +39,7 @@ typedef unsigned long  size_t;
 #define OP_TASK_WAIT       14
 #define OP_TASK_LIST       15
 #define OP_TASK_KILL       16
+#define OP_MEM_EXPAND      17
 #define OP_STORAGE_READ    20
 #define OP_STORAGE_WRITE   21
 #define OP_CHANNEL_CREATE  22
@@ -163,7 +165,7 @@ int      axiom_read(char* buf, size_t count);
 int      axiom_getline(char* buf, size_t max_len);
 int      axiom_channel_create(uint64_t* read_cap, uint64_t* write_cap);
 
-// Standard string helpers
+// Standard string & memory helpers
 size_t   strlen(const char* s);
 int      strcmp(const char* s1, const char* s2);
 int      strncmp(const char* s1, const char* s2, size_t n);
@@ -172,5 +174,14 @@ char*    strncpy(char* dest, const char* src, size_t n);
 char*    strcat(char* dest, const char* src);
 const char* strchr(const char* s, int c);
 char*    strstr(const char* haystack, const char* needle);
+void*    memset(void* s, int c, size_t n);
+void*    memcpy(void* dest, const void* src, size_t n);
+
+// Dynamic Heap Allocator (POSIX & C standard)
+void*    axiom_sbrk(intptr_t increment);
+void*    malloc(size_t size);
+void     free(void* ptr);
+void*    calloc(size_t nmemb, size_t size);
+void*    realloc(void* ptr, size_t size);
 
 #endif

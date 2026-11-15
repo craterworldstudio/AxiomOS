@@ -17,6 +17,7 @@ pub const OP_TASK_EXIT: u64  = 13;
 pub const OP_TASK_WAIT: u64  = 14;
 pub const OP_TASK_LIST: u64  = 15;
 pub const OP_TASK_KILL: u64  = 16;
+pub const OP_MEM_EXPAND: u64 = 17;
 pub const OP_STORAGE_READ: u64   = 20;
 pub const OP_STORAGE_WRITE: u64  = 21;
 pub const OP_CHANNEL_CREATE: u64 = 22;
@@ -595,6 +596,8 @@ pub unsafe fn sys_task_spawn(
     child_tcb.stack_base = kstack_virt_base;
     child_tcb.data_frame_phys = data_frame.start_address;
     child_tcb.exit_code = 0;
+    child_tcb.heap_start = 0x1000_0000;
+    child_tcb.heap_brk = 0x1000_0000;
 
     let mut proc_name = [0u8; 32];
     let arg0_src = params.argv_ptrs[0] as *const u8;
@@ -625,6 +628,82 @@ pub unsafe fn sys_task_spawn(
     crate::serial_print("\n");
 
     child_pid as u64
+}
+
+pub unsafe fn sys_mem_expand(
+    caller_tcb: &mut crate::thread::TCB,
+    object_table: &ObjectTable,
+    increment_bytes: u64,
+) -> u64 {
+    if caller_tcb.heap_start == 0 {
+        caller_tcb.heap_start = 0x1000_0000;
+        caller_tcb.heap_brk = 0x1000_0000;
+    }
+
+    let old_brk = caller_tcb.heap_brk;
+    if increment_bytes == 0 {
+        return old_brk;
+    }
+
+    let new_brk = match old_brk.checked_add(increment_bytes) {
+        Some(b) => b,
+        None => return 0,
+    };
+
+    // Upper bounds limit: 768 MB userland heap (0x1000_0000 .. 0x4000_0000)
+    if new_brk > 0x4000_0000 {
+        return 0;
+    }
+
+    // Resolve caller's VSpace (PML4)
+    let pml4_phys = match caller_tcb.vspace {
+        Some(vref) => match object_table.resolve(vref) {
+            Some((_, phys)) => phys,
+            None => return 0,
+        },
+        None => crate::memory::BOOT_CR3,
+    };
+
+    let alloc = match crate::memory::KERNEL_FRAME_ALLOCATOR.as_mut() {
+        Some(a) => a,
+        None => return 0,
+    };
+
+    // Determine 4KB page range that needs physical frames
+    let cur_page_top = (old_brk + 4095) & !4095;
+    let new_page_top = (new_brk + 4095) & !4095;
+
+    if new_page_top > cur_page_top {
+        let mut page_addr = cur_page_top;
+        while page_addr < new_page_top {
+            let frame = match alloc.allocate_frame() {
+                Some(f) => f,
+                None => return 0,
+            };
+
+            // Zero-initialize allocated physical frame
+            let virt_ptr = crate::memory::phys_to_virt_ptr::<u8>(frame.start_address);
+            core::ptr::write_bytes(virt_ptr, 0, 4096);
+
+            let res = crate::memory::map_page(
+                pml4_phys,
+                page_addr,
+                frame.start_address,
+                crate::memory::PageFlags::PRESENT | crate::memory::PageFlags::USER | crate::memory::PageFlags::WRITABLE,
+                alloc,
+            );
+
+            if res.is_err() {
+                alloc.deallocate_frame(frame);
+                return 0;
+            }
+
+            page_addr += 4096;
+        }
+    }
+
+    caller_tcb.heap_brk = new_brk;
+    old_brk
 }
 
 pub unsafe fn sys_task_exit(
@@ -904,6 +983,11 @@ pub extern "C" fn sys_invoke_handler(
     // Fast-path for OP_TASK_EXIT: a process can always exit itself regardless of handle!
     if operation == OP_TASK_EXIT {
         return unsafe { sys_task_exit(caller_tcb, object_table, arg1) };
+    }
+
+    // Fast-path for OP_MEM_EXPAND: dynamic heap expansion
+    if operation == OP_MEM_EXPAND {
+        return unsafe { sys_mem_expand(caller_tcb, object_table, arg1) };
     }
 
     let handle = CapHandle(handle_val);

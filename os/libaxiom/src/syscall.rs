@@ -17,6 +17,7 @@ pub const OP_TASK_EXIT: u64  = 13;
 pub const OP_TASK_WAIT: u64  = 14;
 pub const OP_TASK_LIST: u64  = 15;
 pub const OP_TASK_KILL: u64  = 16;
+pub const OP_MEM_EXPAND: u64 = 17;
 pub const OP_STORAGE_READ: u64   = 20;
 pub const OP_STORAGE_WRITE: u64  = 21;
 pub const OP_CHANNEL_CREATE: u64 = 22;
@@ -216,6 +217,17 @@ pub unsafe fn channel_create() -> Result<(crate::capability::CapHandle, crate::c
         Ok((crate::capability::CapHandle(handles[0]), crate::capability::CapHandle(handles[1])))
     } else {
         Err(SyscallError::from_code(res).err().unwrap_or(SyscallError::Unknown(res)))
+    }
+}
+
+/// Dynamically expands the process virtual memory heap by `increment_bytes` and returns the old break pointer.
+#[inline(always)]
+pub unsafe fn mem_expand(increment_bytes: u64) -> Result<u64, SyscallError> {
+    let res = invoke_short(0, OP_MEM_EXPAND, increment_bytes, 0);
+    if res == 0 {
+        Err(SyscallError::InvalidHandle)
+    } else {
+        Ok(res)
     }
 }
 

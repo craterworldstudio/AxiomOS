@@ -690,6 +690,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         core::ptr::write(&raw mut (*tcb_e).cspace, Some(genesis_cnode_ref));
         core::ptr::write(&raw mut (*tcb_e).frame_kind, thread::FrameKind::Interrupt);
         core::ptr::write(&raw mut (*tcb_e).name, *b"genesis\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        core::ptr::write(&raw mut (*tcb_e).heap_start, 0x1000_0000);
+        core::ptr::write(&raw mut (*tcb_e).heap_brk, 0x1000_0000);
         core::ptr::write(
             &raw mut (*tcb_e).rsp,
             thread::TCB::forge_user_stack(

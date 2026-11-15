@@ -65,3 +65,23 @@ unsafe impl GlobalAlloc for BumpAllocator {
         self.deallocate(ptr, layout);
     }
 }
+
+/// Dynamic global heap allocator backed directly by the microkernel OP_MEM_EXPAND system call.
+/// Enables `extern crate alloc` (`Vec`, `String`, `Box`, `BTreeMap`) for all Rust userland programs.
+pub struct AxiomHeapAllocator;
+
+unsafe impl GlobalAlloc for AxiomHeapAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let size = layout.size().max(16);
+        let align = layout.align().max(16);
+        let aligned_size = (size + align - 1) & !(align - 1);
+        match crate::syscall::mem_expand(aligned_size as u64) {
+            Ok(ptr) => ptr as *mut u8,
+            Err(_) => core::ptr::null_mut(),
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // Reclaimed cleanly upon task exit
+    }
+}
