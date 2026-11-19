@@ -224,7 +224,8 @@ impl GraphNode {
             return "";
         }
         let slice = unsafe { core::slice::from_raw_parts(self.data_ptr, self.data_len) };
-        core::str::from_utf8(slice).unwrap_or("<binary data>")
+        let s = core::str::from_utf8(slice).unwrap_or("<binary data>");
+        s.trim_end_matches('\0')
     }
 }
 
@@ -251,6 +252,8 @@ const README: &[u8] = b"Sovereign Root Workspace\n- apps/sys/  : Standalone exec
 const DEMO_SH: &[u8] = b"#!/bin/sh\n# Sovereign Shell Demonstration\nMSG=\"AxiomOS On-Device Shell Engine\"\necho $MSG\necho \"Active shell: $SHELL\"\necho \"Files in current directory:\"\nls /vaults/root\necho \"Script completed successfully.\"\n\0";
 const MATH_C: &[u8] = b"int fib(int n) {\n    if (n <= 1) return n;\n    return fib(n - 1) + fib(n - 2);\n}\n\nint main() {\n    int f;\n    char* mem;\n    printf(\"=== Sovereign On-Device C Compiler (crun) ===\\n\");\n    f = fib(7);\n    printf(\"fib(7) = %d\\n\", f);\n    mem = malloc(32);\n    strcpy(mem, \"Heap Allocation OK\");\n    printf(\"Dynamic Allocation Test: %s\\n\", mem);\n    free(mem);\n    printf(\"C execution verified!\\n\");\n    return 0;\n}\n\0";
 const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\nproc.bin        console:all,storage:read\nworker.bin      console:write\nsh.bin          console:all,storage:all\ncrun.bin        console:all,storage:all\n\0";
+const USERS_DB: &[u8] = b"root:0:a1b2c3d4e5f60718:ee8ba52143d484d0d5570699d9995cfb97d0cdf0f859c4ef79a54d9d862ac33e:vaults/root:15\nuser:1000:0102030405060708:2dfb8795cbc4d26515005708c8fb9ca54a5b22813189d3aa4f2f0b3ebe84f3e3:vaults/user:3\n";
+const USER_WELCOME: &[u8] = b"Welcome to your sovereign personal vault space (/vaults/user).\nYou have full read/write authority within this vault.\n\0";
 
 impl CapGraph {
     pub const fn new() -> Self {
@@ -280,6 +283,7 @@ impl CapGraph {
         // 3. vaults/ Directory Map
         let vaults_id = self.add_map(0, "vaults", RIGHTS_ALL);
         let root_vault_id = self.add_map(vaults_id, "root", RIGHTS_ALL);
+        let user_vault_id = self.add_map(vaults_id, "user", RIGHTS_ALL);
 
         // 4. edps/ Directory Map (Capability Endpoints)
         let edps_id = self.add_map(0, "edps", RIGHTS_READ);
@@ -304,6 +308,7 @@ impl CapGraph {
 
         // Add config files to meta/ Map
         self.add_static_blob(meta_id, "caps.ledger", CAPS_LEDGER, RIGHTS_READ);
+        self.add_static_blob(meta_id, "users.db", USERS_DB, RIGHTS_READ);
         self.add_static_blob(meta_id, "os-release", OS_RELEASE, RIGHTS_READ);
         self.add_static_blob(meta_id, "motd", MOTD, RIGHTS_READ);
 
@@ -311,6 +316,9 @@ impl CapGraph {
         self.add_static_blob(root_vault_id, "readme.txt", README, RIGHTS_ALL);
         self.add_static_blob(root_vault_id, "demo.sh", DEMO_SH, RIGHTS_ALL);
         self.add_static_blob(root_vault_id, "math.c", MATH_C, RIGHTS_ALL);
+
+        // Add vaults/user data files
+        self.add_static_blob(user_vault_id, "welcome.txt", USER_WELCOME, RIGHTS_ALL);
 
         // Add capability endpoints
         self.add_endpoint(edps_id, "console", 5, RIGHTS_WRITE | RIGHTS_READ);
@@ -1018,13 +1026,13 @@ impl CapGraph {
 /// Canonicalizes a relative or step-back path against a working directory.
 /// Supports multi-level step-backs (`../../`), explicit local paths (`./`),
 /// root navigation (`/`), and vault home navigation (`~`).
-pub fn resolve_path(cwd: &str, input_path: &str) -> ([u8; 64], usize) {
+pub fn resolve_path(cwd: &str, input_path: &str, home: &str) -> ([u8; 64], usize) {
     let mut segments: [&str; 8] = [""; 8];
     let mut seg_count = 0;
 
     let trimmed_input = input_path.trim();
     let (is_absolute, path_to_process) = if trimmed_input == "~" {
-        (true, "vaults/root")
+        (true, home)
     } else if trimmed_input.starts_with("~/") {
         (true, &trimmed_input[2..])
     } else if trimmed_input.starts_with('/') {
@@ -1034,9 +1042,13 @@ pub fn resolve_path(cwd: &str, input_path: &str) -> ([u8; 64], usize) {
     };
 
     if trimmed_input.starts_with("~/") {
-        segments[0] = "vaults";
-        segments[1] = "root";
-        seg_count = 2;
+        for seg in home.split('/') {
+            let s = seg.trim();
+            if !s.is_empty() && s != "." && seg_count < 8 {
+                segments[seg_count] = s;
+                seg_count += 1;
+            }
+        }
     } else if !is_absolute {
         for seg in cwd.split('/') {
             let s = seg.trim();
@@ -1084,5 +1096,56 @@ pub fn resolve_path(cwd: &str, input_path: &str) -> ([u8; 64], usize) {
     }
 
     (out, out_len)
+}
+
+#[derive(Clone, Copy)]
+pub struct UserRecord<'a> {
+    pub username: &'a str,
+    pub uid: u32,
+    pub salt: &'a str,
+    pub hash: &'a str,
+    pub home: &'a str,
+    pub rights: u32,
+}
+
+impl CapGraph {
+    pub fn find_user<'a>(db_text: &'a str, username: &str) -> Option<UserRecord<'a>> {
+        for line in db_text.lines() {
+            let line = line.trim().trim_matches('\0').trim();
+            if line.is_empty() || line.starts_with('#') { continue; }
+            let mut parts = line.split(':');
+            let u = parts.next()?;
+            let uid_str = parts.next()?;
+            let salt = parts.next()?;
+            let hash = parts.next()?;
+            let home = parts.next()?;
+            let rights_str = parts.next().unwrap_or("3");
+            if u == username {
+                let uid = Self::parse_u32(uid_str)?;
+                let rights = Self::parse_u32(rights_str)?;
+                return Some(UserRecord {
+                    username: u,
+                    uid,
+                    salt,
+                    hash,
+                    home,
+                    rights,
+                });
+            }
+        }
+        None
+    }
+
+    pub fn parse_u32(s: &str) -> Option<u32> {
+        let mut val = 0u32;
+        for &b in s.as_bytes() {
+            if b >= b'0' && b <= b'9' {
+                val = val.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+            } else {
+                return None;
+            }
+        }
+        Some(val)
+    }
 }
 

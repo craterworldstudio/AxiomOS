@@ -27,8 +27,10 @@ $(OUT_DIR)/echo.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/echo.c
 	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/echo.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/echo.o $(BUILD_DIR)/libaxiom.o
 	objcopy -O binary $(BUILD_DIR)/echo.elf $(OUT_DIR)/echo.bin
 
-$(OUT_DIR)/whoami.bin: bin/whoami.asm
-	$(NASM) -f bin bin/whoami.asm -o $(OUT_DIR)/whoami.bin
+$(OUT_DIR)/whoami.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/whoami.c
+	$(CC) $(CFLAGS) -c bin/whoami.c -o $(BUILD_DIR)/whoami.o
+	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/whoami.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/whoami.o $(BUILD_DIR)/libaxiom.o
+	objcopy -O binary $(BUILD_DIR)/whoami.elf $(OUT_DIR)/whoami.bin
 
 $(OUT_DIR)/ls.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/ls.c
 	$(CC) $(CFLAGS) -c bin/ls.c -o $(BUILD_DIR)/ls.o

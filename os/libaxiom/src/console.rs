@@ -332,6 +332,48 @@ impl ConsoleReader {
         }
     }
 
+    /// Reads a password from the console, optionally masking characters with '*'.
+    /// Returns Some(len) on Enter, or None if aborted with Ctrl+C.
+    pub fn read_password(buf: &mut [u8], mask: bool) -> Option<usize> {
+        let mut len = 0;
+        let max_len = buf.len();
+
+        loop {
+            if let Some(b) = Self::get_raw_key() {
+                match b {
+                    b'\r' | b'\n' => {
+                        ConsoleWriter::write_str("\n");
+                        return Some(len);
+                    },
+                    3 => { // Ctrl+C
+                        ConsoleWriter::write_str("^C\n");
+                        return None;
+                    },
+                    8 | 127 => { // Backspace
+                        if len > 0 {
+                            len -= 1;
+                            if mask {
+                                ConsoleWriter::write_str("\x08 \x08");
+                            }
+                        }
+                    },
+                    32..=126 => { // Printable ASCII
+                        if len < max_len {
+                            buf[len] = b;
+                            len += 1;
+                            if mask {
+                                ConsoleWriter::write_str("*");
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+            } else {
+                unsafe { core::arch::asm!("pause"); }
+            }
+        }
+    }
+
     /// Reads a complete line of text using the default command history.
     pub fn read_line(buf: &mut [u8]) -> usize {
         Self::read_line_with_history(buf, unsafe { &mut *core::ptr::addr_of_mut!(DEFAULT_HISTORY) }).unwrap_or(0)

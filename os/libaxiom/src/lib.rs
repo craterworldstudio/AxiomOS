@@ -16,6 +16,7 @@ pub mod ipc;
 pub mod allocator;
 pub mod console;
 pub mod fs;
+pub mod crypto;
 
 pub use syscall::{SyscallError, invoke, invoke_short};
 pub use capability::{CapHandle, Rights, ObjectKind, EndpointCap, CNodeCap};
@@ -23,6 +24,7 @@ pub use ipc::{rpc_call, ipc_send, ipc_recv};
 pub use allocator::{BumpAllocator, AxiomHeapAllocator};
 pub use console::{ConsoleWriter, ConsoleReader, HistoryRing};
 pub use fs::{CapGraph, GRAPH, CapToken, MapLink, GraphObjectKind, resolve_path};
+pub use crypto::{Sha256, sha256_digest, hex_encode, hex_decode};
 
 // ============================================================================
 // ROOT CAPABILITY SLOTS (Genesis Process CSpace Initial Layout)

@@ -12,8 +12,79 @@ use core::panic::PanicInfo;
 use libaxiom::capability::*;
 use libaxiom::console::{ConsoleWriter, ConsoleReader};
 use libaxiom::fs::*;
+use libaxiom::crypto::*;
 use libaxiom::syscall::*;
 use libaxiom::*;
+
+pub struct SessionState {
+    pub uid: u32,
+    pub name: [u8; 32],
+    pub name_len: usize,
+    pub rights: u32,
+    pub home: [u8; 32],
+    pub home_len: usize,
+}
+
+impl SessionState {
+    pub const fn root() -> Self {
+        let mut name = [0u8; 32];
+        name[0] = b'r'; name[1] = b'o'; name[2] = b'o'; name[3] = b't';
+        let mut home = [0u8; 32];
+        let h = b"vaults/root";
+        let mut i = 0;
+        while i < h.len() {
+            home[i] = h[i];
+            i += 1;
+        }
+        Self {
+            uid: 0,
+            name,
+            name_len: 4,
+            rights: 0b1111,
+            home,
+            home_len: h.len(),
+        }
+    }
+
+    pub fn name_str(&self) -> &str {
+        core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("unknown")
+    }
+
+    pub fn home_str(&self) -> &str {
+        core::str::from_utf8(&self.home[..self.home_len]).unwrap_or("vaults/root")
+    }
+}
+
+pub static mut CURRENT_SESSION: SessionState = SessionState::root();
+
+fn verify_user_password(user: &str, password: &[u8]) -> bool {
+    let graph = unsafe { &mut GRAPH };
+    let db_token = match graph.lookup(0, "meta/users.db") {
+        Some(t) => t,
+        None => return false,
+    };
+    let db_node = &graph.nodes[db_token.target_id];
+    let db_str = db_node.content_str();
+    let rec = match CapGraph::find_user(db_str, user) {
+        Some(r) => r,
+        None => return false,
+    };
+
+    let salt_b = rec.salt.as_bytes();
+    let mut to_hash = [0u8; 96];
+    let mut h_len = 0;
+    to_hash[..salt_b.len()].copy_from_slice(salt_b);
+    h_len += salt_b.len();
+    let pw_len = core::cmp::min(password.len(), 96 - h_len);
+    to_hash[h_len..h_len + pw_len].copy_from_slice(&password[..pw_len]);
+    h_len += pw_len;
+
+    let digest = sha256_digest(&to_hash[..h_len]);
+    let mut hex_buf = [0u8; 64];
+    hex_encode(&digest, &mut hex_buf);
+
+    &hex_buf[..64] == rec.hash.as_bytes()
+}
 
 // User-space mailbox communication offsets (mapped inside Genesis VSpace at 0x600000)
 pub const USER_MAILBOX_FLAG: *mut u32    = 0x600000 as *mut u32;
@@ -130,11 +201,22 @@ pub extern "C" fn _start() -> ! {
         loop {
             reap_background_tasks();
 
-            ConsoleWriter::set_color(0x005CB3E6, 0x00101418); // Soft Sovereign Cyan
-            if let Ok(p) = core::str::from_utf8(&cwd[..cwd_len]) {
-                print!("root@axiom:{}# ", p);
+            let sess = unsafe { &CURRENT_SESSION };
+            if sess.uid == 0 {
+                ConsoleWriter::set_color(0x005CB3E6, 0x00101418); // Soft Sovereign Cyan
+                if let Ok(p) = core::str::from_utf8(&cwd[..cwd_len]) {
+                    print!("root@axiom:{}# ", p);
+                } else {
+                    print!("root@axiom:vaults/root# ");
+                }
             } else {
-                print!("root@axiom:vaults/root# ");
+                ConsoleWriter::set_color(0x006EBA87, 0x00101418); // Calm Sage / Attenuation Green
+                let uname = sess.name_str();
+                if let Ok(p) = core::str::from_utf8(&cwd[..cwd_len]) {
+                    print!("{}@axiom:{}$ ", uname, p);
+                } else {
+                    print!("{}@axiom:vaults/{}$ ", uname, uname);
+                }
             }
 
             let len = match ConsoleReader::read_line_with_history(&mut line_buf, unsafe { &mut *core::ptr::addr_of_mut!(libaxiom::console::DEFAULT_HISTORY) }) {
@@ -255,6 +337,14 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     } else {
         (false, input)
     };
+
+    let sess = unsafe { &CURRENT_SESSION };
+    if is_curr && sess.uid != 0 {
+        ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+        println!("curr: permission denied: UID 0 required to bypass capability ledger");
+        ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+        return;
+    }
 
     let is_background = effective_input.ends_with('&');
     let effective_input = if is_background {
@@ -447,6 +537,10 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
             println!("  cd <path>            - Change working directory");
             println!("  pwd                  - Print current directory path");
             println!("  clear                - Clear console canvas");
+            println!("  su [user]            - Switch active user identity (prompts for password)");
+            println!("  useradd <user>       - Add a new sovereign user account (UID 0 only)");
+            println!("  passwd [user]        - Change user authentication password");
+            println!("  logout / exit        - Switch back to root / terminate session");
             println!("  reboot               - Trigger hardware system reboot");
             println!("  shutdown / poweroff  - Cleanly power down substrate / hypervisor");
             println!("  kpanic [scenario]    - Test Kernel Panic diagnostics (assert/gpf/pf/df/div0)");
@@ -548,13 +642,22 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 println!("Options:");
                 println!("  -h, --help    Show this command reference manual");
                 println!("  ..            Move up one directory level (supports multi-level ../..)");
-                println!("  ~             Navigate to root vault (vaults/root)");
+                println!("  ~             Navigate to user personal vault");
                 return;
             }
+            let sess = unsafe { &CURRENT_SESSION };
             let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
             let target_input = if arg_str.is_empty() { "~" } else { arg_str };
-            let (res_buf, res_len) = resolve_path(cur_str, target_input);
+            let (res_buf, res_len) = resolve_path(cur_str, target_input, sess.home_str());
             let res_str = core::str::from_utf8(&res_buf[..res_len]).unwrap_or("/");
+
+            // Capability boundary check: non-root cannot enter /vaults/root
+            if sess.uid != 0 && (res_str == "vaults/root" || res_str.starts_with("vaults/root/")) {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("cd: permission denied: insufficient capability rights for /vaults/root");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return;
+            }
 
             if res_str == "/" {
                 *current_map = 0;
@@ -570,6 +673,360 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
                 }
             } else {
                 println!("cd: {}: No such file or directory", arg_str);
+            }
+            return;
+        },
+        "su" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: su [username] [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Switch active user identity and capability session.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
+            let target = if arg_str.is_empty() { "root" } else { arg_str.trim() };
+            let graph = unsafe { &mut GRAPH };
+            let db_token = match graph.lookup(0, "meta/users.db") {
+                Some(t) => t,
+                None => {
+                    println!("su: /meta/users.db not found");
+                    return;
+                }
+            };
+            let db_node = &graph.nodes[db_token.target_id];
+            let db_str = db_node.content_str();
+            let rec = match CapGraph::find_user(db_str, target) {
+                Some(r) => r,
+                None => {
+                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                    println!("su: user '{}' does not exist", target);
+                    ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                    return;
+                }
+            };
+
+            print!("Password: ");
+            let mut pw_buf = [0u8; 64];
+            let pw_len = match ConsoleReader::read_password(&mut pw_buf, true) {
+                Some(l) => l,
+                None => return,
+            };
+
+            if verify_user_password(target, &pw_buf[..pw_len]) {
+                let sess = unsafe { &mut CURRENT_SESSION };
+                sess.uid = rec.uid;
+                sess.name = [0; 32];
+                let ub = rec.username.as_bytes();
+                let ulen = core::cmp::min(ub.len(), 31);
+                sess.name[..ulen].copy_from_slice(&ub[..ulen]);
+                sess.name_len = ulen;
+                sess.rights = rec.rights;
+                sess.home = [0; 32];
+                let hb = rec.home.as_bytes();
+                let hlen = core::cmp::min(hb.len(), 31);
+                sess.home[..hlen].copy_from_slice(&hb[..hlen]);
+                sess.home_len = hlen;
+
+                // Update CWD to user's home
+                if let Some(t) = graph.lookup(0, rec.home) {
+                    if graph.nodes[t.target_id].kind == GraphObjectKind::DirectoryMap {
+                        *current_map = t.target_id;
+                        cwd[..hlen].copy_from_slice(&hb[..hlen]);
+                        *cwd_len = hlen;
+                    }
+                }
+                ConsoleWriter::set_color(0x006EBA87, 0x00101418);
+                println!("Authentication successful. Switched to user '{}'.", target);
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+            } else {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("su: Authentication failure");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+            }
+            return;
+        },
+        "useradd" => {
+            if arg_str == "-h" || arg_str == "--help" || arg_str.is_empty() {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: useradd <username> [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Create a new sovereign user account with an isolated personal vault.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
+            let sess = unsafe { &CURRENT_SESSION };
+            if sess.uid != 0 {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("useradd: Permission denied (UID 0 required)");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return;
+            }
+
+            let new_user = arg_str.trim();
+            if new_user.len() > 16 || new_user.contains(':') || new_user.contains('/') {
+                println!("useradd: Invalid username '{}'", new_user);
+                return;
+            }
+
+            let graph = unsafe { &mut GRAPH };
+            let db_token = match graph.lookup(0, "meta/users.db") {
+                Some(t) => t,
+                None => {
+                    println!("useradd: /meta/users.db not found");
+                    return;
+                }
+            };
+            let db_node = &graph.nodes[db_token.target_id];
+            let db_str = db_node.content_str();
+            if CapGraph::find_user(db_str, new_user).is_some() {
+                println!("useradd: user '{}' already exists", new_user);
+                return;
+            }
+
+            // Find next UID (>= 1000)
+            let mut max_uid = 999u32;
+            for line in db_str.lines() {
+                let l = line.trim();
+                if l.is_empty() || l.starts_with('#') { continue; }
+                let mut parts = l.split(':');
+                let _ = parts.next();
+                if let Some(uid_s) = parts.next() {
+                    if let Some(u) = CapGraph::parse_u32(uid_s) {
+                        if u > max_uid { max_uid = u; }
+                    }
+                }
+            }
+            let new_uid = max_uid + 1;
+
+            print!("New password: ");
+            let mut pw1_buf = [0u8; 64];
+            let pw1_len = match ConsoleReader::read_password(&mut pw1_buf, true) {
+                Some(l) => l,
+                None => return,
+            };
+            print!("Retype password: ");
+            let mut pw2_buf = [0u8; 64];
+            let pw2_len = match ConsoleReader::read_password(&mut pw2_buf, true) {
+                Some(l) => l,
+                None => return,
+            };
+
+            if pw1_len != pw2_len || &pw1_buf[..pw1_len] != &pw2_buf[..pw2_len] {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("useradd: passwords do not match");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return;
+            }
+
+            // Generate salt
+            let mut salt = [0u8; 16];
+            salt.copy_from_slice(b"0102030405060708");
+            let u_rem = new_uid;
+            for k in 0..4 {
+                let nib = ((u_rem >> (k * 4)) & 0x0F) as u8;
+                salt[15 - k] = if nib < 10 { b'0' + nib } else { b'a' + (nib - 10) };
+            }
+
+            // Compute SHA-256
+            let mut to_hash = [0u8; 96];
+            to_hash[..16].copy_from_slice(&salt);
+            to_hash[16..16 + pw1_len].copy_from_slice(&pw1_buf[..pw1_len]);
+            let digest = sha256_digest(&to_hash[..16 + pw1_len]);
+            let mut hash_hex = [0u8; 64];
+            hex_encode(&digest, &mut hash_hex);
+
+            // Append to db
+            let mut new_db = [0u8; 1024];
+            let clean_str = db_str.trim_matches('\0').trim();
+            let old_b = clean_str.as_bytes();
+            let mut d_len = core::cmp::min(old_b.len(), 800);
+            new_db[..d_len].copy_from_slice(&old_b[..d_len]);
+            if d_len > 0 && new_db[d_len - 1] != b'\n' {
+                new_db[d_len] = b'\n';
+                d_len += 1;
+            }
+
+            let nb = new_user.as_bytes();
+            new_db[d_len..d_len + nb.len()].copy_from_slice(nb); d_len += nb.len();
+            new_db[d_len] = b':'; d_len += 1;
+            d_len += CapGraph::write_u32_dec(&mut new_db[d_len..], new_uid);
+            new_db[d_len] = b':'; d_len += 1;
+            new_db[d_len..d_len + 16].copy_from_slice(&salt); d_len += 16;
+            new_db[d_len] = b':'; d_len += 1;
+            new_db[d_len..d_len + 64].copy_from_slice(&hash_hex); d_len += 64;
+            let h_pfx = b":vaults/";
+            new_db[d_len..d_len + h_pfx.len()].copy_from_slice(h_pfx); d_len += h_pfx.len();
+            new_db[d_len..d_len + nb.len()].copy_from_slice(nb); d_len += nb.len();
+            let r_sfx = b":3\n";
+            new_db[d_len..d_len + r_sfx.len()].copy_from_slice(r_sfx); d_len += r_sfx.len();
+
+            let _ = graph.write_file(0, "meta/users.db", &new_db[..d_len]);
+
+            // Create personal vault directory map: vaults/<new_user>
+            if let Some(vt) = graph.lookup(0, "vaults") {
+                let _map_id = graph.add_map(vt.target_id, new_user, RIGHTS_ALL);
+                let mut welcome_path = [0u8; 48];
+                let mut wp_len = 0;
+                let pfx = b"vaults/";
+                welcome_path[..pfx.len()].copy_from_slice(pfx); wp_len += pfx.len();
+                welcome_path[wp_len..wp_len + nb.len()].copy_from_slice(nb); wp_len += nb.len();
+                let sfx = b"/welcome.txt";
+                welcome_path[wp_len..wp_len + sfx.len()].copy_from_slice(sfx); wp_len += sfx.len();
+                if let Ok(wp_str) = core::str::from_utf8(&welcome_path[..wp_len]) {
+                    let _ = graph.write_file(0, wp_str, b"Welcome to your sovereign personal vault space.\n");
+                }
+            }
+
+            ConsoleWriter::set_color(0x006EBA87, 0x00101418);
+            println!("useradd: user '{}' created with UID {}", new_user, new_uid);
+            ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+            return;
+        },
+        "passwd" => {
+            if arg_str == "-h" || arg_str == "--help" {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Usage: passwd [username] [options]");
+                ConsoleWriter::set_color(0x00E0E0E0, 0x00101418);
+                println!("Change user authentication password.");
+                println!("Options:");
+                println!("  -h, --help    Show this command reference manual");
+                return;
+            }
+            let sess = unsafe { &CURRENT_SESSION };
+            let target = if arg_str.is_empty() { sess.name_str() } else { arg_str.trim() };
+            if target != sess.name_str() && sess.uid != 0 {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("passwd: only root can change other users' passwords");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return;
+            }
+
+            let graph = unsafe { &mut GRAPH };
+            let db_token = match graph.lookup(0, "meta/users.db") {
+                Some(t) => t,
+                None => {
+                    println!("passwd: /meta/users.db not found");
+                    return;
+                }
+            };
+            let db_node = &graph.nodes[db_token.target_id];
+            let db_str = db_node.content_str();
+            let rec = match CapGraph::find_user(db_str, target) {
+                Some(r) => r,
+                None => {
+                    println!("passwd: user '{}' does not exist", target);
+                    return;
+                }
+            };
+
+            // If non-root changing own password, prompt for current password
+            if sess.uid != 0 {
+                print!("Current password: ");
+                let mut cur_buf = [0u8; 64];
+                let cur_len = match ConsoleReader::read_password(&mut cur_buf, true) {
+                    Some(l) => l,
+                    None => return,
+                };
+                if !verify_user_password(target, &cur_buf[..cur_len]) {
+                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                    println!("passwd: Authentication failure");
+                    ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                    return;
+                }
+            }
+
+            print!("New password: ");
+            let mut pw1_buf = [0u8; 64];
+            let pw1_len = match ConsoleReader::read_password(&mut pw1_buf, true) {
+                Some(l) => l,
+                None => return,
+            };
+            print!("Retype password: ");
+            let mut pw2_buf = [0u8; 64];
+            let pw2_len = match ConsoleReader::read_password(&mut pw2_buf, true) {
+                Some(l) => l,
+                None => return,
+            };
+
+            if pw1_len != pw2_len || &pw1_buf[..pw1_len] != &pw2_buf[..pw2_len] {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("passwd: passwords do not match");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return;
+            }
+
+            // Rehash with user's existing salt
+            let mut to_hash = [0u8; 96];
+            let salt_b = rec.salt.as_bytes();
+            to_hash[..salt_b.len()].copy_from_slice(salt_b);
+            to_hash[salt_b.len()..salt_b.len() + pw1_len].copy_from_slice(&pw1_buf[..pw1_len]);
+            let digest = sha256_digest(&to_hash[..salt_b.len() + pw1_len]);
+            let mut hash_hex = [0u8; 64];
+            hex_encode(&digest, &mut hash_hex);
+
+            // Reconstruct users.db with updated line
+            let mut new_db = [0u8; 1024];
+            let mut d_len = 0;
+            for line in db_str.lines() {
+                let l = line.trim();
+                if l.is_empty() { continue; }
+                if l.starts_with('#') {
+                    let lb = l.as_bytes();
+                    new_db[d_len..d_len + lb.len()].copy_from_slice(lb); d_len += lb.len();
+                    new_db[d_len] = b'\n'; d_len += 1;
+                    continue;
+                }
+                let mut parts = l.split(':');
+                let u = parts.next().unwrap_or("");
+                if u == target {
+                    let nb = target.as_bytes();
+                    new_db[d_len..d_len + nb.len()].copy_from_slice(nb); d_len += nb.len();
+                    new_db[d_len] = b':'; d_len += 1;
+                    d_len += CapGraph::write_u32_dec(&mut new_db[d_len..], rec.uid);
+                    new_db[d_len] = b':'; d_len += 1;
+                    new_db[d_len..d_len + salt_b.len()].copy_from_slice(salt_b); d_len += salt_b.len();
+                    new_db[d_len] = b':'; d_len += 1;
+                    new_db[d_len..d_len + 64].copy_from_slice(&hash_hex); d_len += 64;
+                    new_db[d_len] = b':'; d_len += 1;
+                    let hb = rec.home.as_bytes();
+                    new_db[d_len..d_len + hb.len()].copy_from_slice(hb); d_len += hb.len();
+                    new_db[d_len] = b':'; d_len += 1;
+                    d_len += CapGraph::write_u32_dec(&mut new_db[d_len..], rec.rights);
+                    new_db[d_len] = b'\n'; d_len += 1;
+                } else {
+                    let lb = l.as_bytes();
+                    new_db[d_len..d_len + lb.len()].copy_from_slice(lb); d_len += lb.len();
+                    new_db[d_len] = b'\n'; d_len += 1;
+                }
+            }
+
+            let _ = graph.write_file(0, "meta/users.db", &new_db[..d_len]);
+            ConsoleWriter::set_color(0x006EBA87, 0x00101418);
+            println!("passwd: password updated successfully for '{}'", target);
+            ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+            return;
+        },
+        "logout" | "exit" => {
+            let sess = unsafe { &mut CURRENT_SESSION };
+            if sess.uid != 0 {
+                *sess = SessionState::root();
+                let graph = unsafe { &mut GRAPH };
+                if let Some(vr) = graph.lookup(0, "vaults/root") {
+                    *current_map = vr.target_id;
+                    let vr_bytes = b"vaults/root";
+                    cwd[..vr_bytes.len()].copy_from_slice(vr_bytes);
+                    *cwd_len = vr_bytes.len();
+                }
+                ConsoleWriter::set_color(0x006EBA87, 0x00101418);
+                println!("Session terminated. Switched back to sovereign root.");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+            } else {
+                ConsoleWriter::set_color(0x00FFD166, 0x00101418);
+                println!("Genesis root session cannot exit. Use 'reboot' or 'poweroff'.");
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
             }
             return;
         },
@@ -709,8 +1166,15 @@ fn dispatch_binary(
             file_data[flen] = b'\n';
 
             let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
-            let (res_buf, res_len) = resolve_path(cur_str, fname);
+            let sess = unsafe { &CURRENT_SESSION };
+            let (res_buf, res_len) = resolve_path(cur_str, fname, sess.home_str());
             if let Ok(res_str) = core::str::from_utf8(&res_buf[..res_len]) {
+                if sess.uid != 0 && (res_str == "vaults/root" || res_str.starts_with("vaults/root/") || res_str == "meta" || res_str.starts_with("meta/")) {
+                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                    println!("echo: permission denied: insufficient capability rights");
+                    ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                    return Ok(0);
+                }
                 if let Err(e) = graph.write_file(0, res_str, &file_data[..flen + 1]) {
                     ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
                     println!("echo: {}: {}", fname, e);
@@ -735,8 +1199,15 @@ fn dispatch_binary(
 
     let target_map_id = if cmd == "ls" && !is_help_flag {
         if let Some(path_arg) = ls_path {
-            let (res_buf, res_len) = resolve_path(cur_str, path_arg);
+            let sess = unsafe { &CURRENT_SESSION };
+            let (res_buf, res_len) = resolve_path(cur_str, path_arg, sess.home_str());
             let res_str = core::str::from_utf8(&res_buf[..res_len]).unwrap_or("/");
+            if sess.uid != 0 && (res_str == "vaults/root" || res_str.starts_with("vaults/root/")) {
+                ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                println!("ls: cannot access '{}': Permission denied", path_arg);
+                ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                return Err("Permission denied");
+            }
             if res_str == "/" {
                 0
             } else if let Some(token) = graph.lookup(0, res_str) {
@@ -918,8 +1389,22 @@ fn dispatch_binary(
 
             if let Some(fpath) = file_arg {
                 let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
-                let (res_buf, res_len) = resolve_path(cur_str, fpath);
+                let sess = &CURRENT_SESSION;
+                let (res_buf, res_len) = resolve_path(cur_str, fpath, sess.home_str());
                 let res_str = core::str::from_utf8(&res_buf[..res_len]).unwrap_or("");
+
+                if sess.uid != 0 && (res_str == "vaults/root" || res_str.starts_with("vaults/root/")) {
+                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                    println!("{}: permission denied: insufficient capability rights for /vaults/root", cmd);
+                    ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                    return Err("Permission denied");
+                }
+                if sess.uid != 0 && cmd == "axe" && (res_str == "meta" || res_str.starts_with("meta/")) {
+                    ConsoleWriter::set_color(0x00FF4B4B, 0x00101418);
+                    println!("axe: permission denied: cannot modify /meta ledger");
+                    ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                    return Err("Permission denied");
+                }
 
                 if let Some(target_token) = graph.lookup(0, res_str) {
                     let target = &graph.nodes[target_token.target_id];
@@ -973,12 +1458,13 @@ fn dispatch_binary(
     let console_cap_val = if custom_console_cap != 0 { custom_console_cap } else { 0x100000005 };
     let stdin_cap_val = if custom_stdin_cap != 0 { custom_stdin_cap } else { 0x100000006 };
 
+    let sess = unsafe { &CURRENT_SESSION };
     let keyring = CapKeyring {
-        user_id: 0,
-        rights: if is_curr { 0b1111 } else { 0b0011 },
+        user_id: sess.uid,
+        rights: if is_curr { 0b1111 } else { sess.rights },
         storage_cap: storage_cap_val,
         console_cap: console_cap_val,
-        user_name: username_buf,
+        user_name: sess.name,
         stdin_cap: stdin_cap_val,
     };
 
@@ -1107,7 +1593,8 @@ fn dispatch_binary(
                     if BLOB_CTX.modified != 0 {
                         let len = core::cmp::min(BLOB_CTX.length as usize, 1024);
                         let cur_str = core::str::from_utf8(&cwd[..*cwd_len]).unwrap_or("/");
-                        let (res_buf, res_len) = resolve_path(cur_str, exec_args.trim());
+                        let sess = &CURRENT_SESSION;
+                        let (res_buf, res_len) = resolve_path(cur_str, exec_args.trim(), sess.home_str());
                         if let Ok(res_str) = core::str::from_utf8(&res_buf[..res_len]) {
                             let _ = graph.write_file(0, res_str, &BLOB_CTX.data[..len]);
                         }
