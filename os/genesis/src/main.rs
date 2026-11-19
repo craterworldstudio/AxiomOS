@@ -137,7 +137,10 @@ pub extern "C" fn _start() -> ! {
                 print!("root@axiom:vaults/root# ");
             }
 
-            let len = ConsoleReader::read_line(&mut line_buf);
+            let len = match ConsoleReader::read_line_with_history(&mut line_buf, unsafe { &mut *core::ptr::addr_of_mut!(libaxiom::console::DEFAULT_HISTORY) }) {
+                Some(l) => l,
+                None => continue,
+            };
             if len == 0 {
                 continue;
             }
@@ -377,8 +380,9 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
     let raw_cmd = parts.next().unwrap_or("");
     let raw_arg_str = parts.next().unwrap_or("").trim();
 
-    // Map aliases: ps -> proc list, kill <pid> -> proc kill <pid>
+    // Map aliases: ps -> proc list, kill <pid> -> proc kill <pid>, .sh -> sh, .c -> crun
     let mut kill_buf = [0u8; 64];
+    let mut script_buf = [0u8; 128];
     let (cmd, arg_str) = if raw_cmd == "ps" {
         ("proc", if raw_arg_str.is_empty() { "list" } else { raw_arg_str })
     } else if raw_cmd == "kill" {
@@ -389,6 +393,34 @@ fn execute_command(input: &str, current_map: &mut usize, cwd: &mut [u8; 64], cwd
         kill_buf[pfx.len()..pfx.len() + ab_len].copy_from_slice(&ab[..ab_len]);
         let total = pfx.len() + ab_len;
         ("proc", core::str::from_utf8(&kill_buf[..total]).unwrap_or("kill"))
+    } else if raw_cmd.ends_with(".sh") {
+        let cmd_b = raw_cmd.as_bytes();
+        let mut pos = 0;
+        script_buf[pos..pos + cmd_b.len()].copy_from_slice(cmd_b);
+        pos += cmd_b.len();
+        if !raw_arg_str.is_empty() {
+            script_buf[pos] = b' ';
+            pos += 1;
+            let ab = raw_arg_str.as_bytes();
+            let ab_len = core::cmp::min(ab.len(), 128 - pos);
+            script_buf[pos..pos + ab_len].copy_from_slice(&ab[..ab_len]);
+            pos += ab_len;
+        }
+        ("sh", core::str::from_utf8(&script_buf[..pos]).unwrap_or(raw_cmd))
+    } else if raw_cmd.ends_with(".c") {
+        let cmd_b = raw_cmd.as_bytes();
+        let mut pos = 0;
+        script_buf[pos..pos + cmd_b.len()].copy_from_slice(cmd_b);
+        pos += cmd_b.len();
+        if !raw_arg_str.is_empty() {
+            script_buf[pos] = b' ';
+            pos += 1;
+            let ab = raw_arg_str.as_bytes();
+            let ab_len = core::cmp::min(ab.len(), 128 - pos);
+            script_buf[pos..pos + ab_len].copy_from_slice(&ab[..ab_len]);
+            pos += ab_len;
+        }
+        ("crun", core::str::from_utf8(&script_buf[..pos]).unwrap_or(raw_cmd))
     } else {
         (raw_cmd, raw_arg_str)
     };
@@ -859,8 +891,10 @@ fn dispatch_binary(
     let mut username_buf = [0u8; 32];
     username_buf[..4].copy_from_slice(b"root");
 
-    // If command is `cat`, `axe`, or `grep` (with file operand), resolve target file blob into BLOB_CTX
-    let storage_cap_val = if (cmd == "cat" || cmd == "axe" || (cmd == "grep" && !exec_args.is_empty() && exec_args.split_whitespace().count() >= 2)) && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
+    // If command is `cat`, `axe`, `grep`, `sh`, or `crun` (with file operand), resolve target file blob into BLOB_CTX
+    let is_file_cmd = cmd == "cat" || cmd == "axe" || cmd == "sh" || cmd == "crun" ||
+                      (cmd == "grep" && !exec_args.is_empty() && exec_args.split_whitespace().count() >= 2);
+    let storage_cap_val = if is_file_cmd && !exec_args.is_empty() && exec_args != "-dh" && exec_args != "-h" && exec_args != "--help" {
         unsafe {
             BLOB_CTX.length = 0;
             BLOB_CTX.modified = 0;

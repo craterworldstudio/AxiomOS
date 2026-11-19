@@ -399,9 +399,9 @@ pub unsafe fn sys_task_spawn(
     };
     crate::serial_print("[KERNEL] sys_task_spawn: VSpace created, copying binary...\n");
 
-    // 16 execution pages at 0x500000 (64 KiB)
+    // 64 execution and BSS pages at 0x500000 (256 KiB)
     let binary_slice = core::slice::from_raw_parts(params.binary_ptr as *const u8, params.binary_len as usize);
-    for i in 0..16 {
+    for i in 0..64 {
         let frame = match alloc.allocate_frame() {
             Some(f) => f,
             None => return 0xFFFFFFFF_00000004,

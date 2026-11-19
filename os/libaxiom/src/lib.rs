@@ -21,7 +21,7 @@ pub use syscall::{SyscallError, invoke, invoke_short};
 pub use capability::{CapHandle, Rights, ObjectKind, EndpointCap, CNodeCap};
 pub use ipc::{rpc_call, ipc_send, ipc_recv};
 pub use allocator::{BumpAllocator, AxiomHeapAllocator};
-pub use console::{ConsoleWriter, ConsoleReader};
+pub use console::{ConsoleWriter, ConsoleReader, HistoryRing};
 pub use fs::{CapGraph, GRAPH, CapToken, MapLink, GraphObjectKind, resolve_path};
 
 // ============================================================================

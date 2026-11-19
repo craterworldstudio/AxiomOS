@@ -6,7 +6,7 @@ NASM = nasm
 OUT_DIR = ../../target/userland_bin
 BUILD_DIR = build
 
-ALL_BINS = $(OUT_DIR)/echo.bin $(OUT_DIR)/whoami.bin $(OUT_DIR)/ls.bin $(OUT_DIR)/cat.bin $(OUT_DIR)/axe.bin $(OUT_DIR)/proc.bin $(OUT_DIR)/worker.bin $(OUT_DIR)/grep.bin $(OUT_DIR)/crash.bin $(OUT_DIR)/heaptest.bin
+ALL_BINS = $(OUT_DIR)/echo.bin $(OUT_DIR)/whoami.bin $(OUT_DIR)/ls.bin $(OUT_DIR)/cat.bin $(OUT_DIR)/axe.bin $(OUT_DIR)/proc.bin $(OUT_DIR)/worker.bin $(OUT_DIR)/grep.bin $(OUT_DIR)/crash.bin $(OUT_DIR)/heaptest.bin $(OUT_DIR)/sh.bin $(OUT_DIR)/crun.bin
 
 all: $(BUILD_DIR) $(OUT_DIR) $(ALL_BINS)
 
@@ -69,6 +69,16 @@ $(OUT_DIR)/heaptest.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/heaptes
 	$(CC) $(CFLAGS) -c bin/heaptest.c -o $(BUILD_DIR)/heaptest.o
 	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/heaptest.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/heaptest.o $(BUILD_DIR)/libaxiom.o
 	objcopy -O binary $(BUILD_DIR)/heaptest.elf $(OUT_DIR)/heaptest.bin
+
+$(OUT_DIR)/sh.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/sh.c
+	$(CC) $(CFLAGS) -c bin/sh.c -o $(BUILD_DIR)/sh.o
+	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/sh.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/sh.o $(BUILD_DIR)/libaxiom.o
+	objcopy -O binary $(BUILD_DIR)/sh.elf $(OUT_DIR)/sh.bin
+
+$(OUT_DIR)/crun.bin: $(BUILD_DIR)/crt0.o $(BUILD_DIR)/libaxiom.o bin/crun.c
+	$(CC) $(CFLAGS) -c bin/crun.c -o $(BUILD_DIR)/crun.o
+	$(LD) $(LDFLAGS) -o $(BUILD_DIR)/crun.elf $(BUILD_DIR)/crt0.o $(BUILD_DIR)/crun.o $(BUILD_DIR)/libaxiom.o
+	objcopy -O binary $(BUILD_DIR)/crun.elf $(OUT_DIR)/crun.bin
 
 clean:
 	rm -rf $(BUILD_DIR) $(OUT_DIR)

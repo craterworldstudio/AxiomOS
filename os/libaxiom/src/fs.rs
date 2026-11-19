@@ -132,6 +132,8 @@ pub const WORKER_BIN: &[u8] = include_bytes!("../../../target/userland_bin/worke
 pub const GREP_BIN: &[u8]   = include_bytes!("../../../target/userland_bin/grep.bin");
 pub const CRASH_BIN: &[u8]  = include_bytes!("../../../target/userland_bin/crash.bin");
 pub const HEAPTEST_BIN: &[u8] = include_bytes!("../../../target/userland_bin/heaptest.bin");
+pub const SH_BIN: &[u8]     = include_bytes!("../../../target/userland_bin/sh.bin");
+pub const CRUN_BIN: &[u8]   = include_bytes!("../../../target/userland_bin/crun.bin");
 
 // Capability Rights Bitflags
 pub const RIGHTS_NONE: u8  = 0b0000;
@@ -246,7 +248,9 @@ pub struct CapBlobContext {
 const OS_RELEASE: &[u8] = b"NAME=\"AxiomOS Sovereign Core Substrate\"\nVERSION=\"0.3.0-alpha\"\nARCH=\"x86_64\"\nSECURITY=\"Object Capability Graph (CapGraph)\"\nAUTHORITY=\"Zero Ambient Authority (CPL=3)\"\n\0";
 const MOTD: &[u8] = b"Welcome to AxiomOS.\nAll storage is modeled as an Object-Oriented Structural Graph.\nCommands are standalone C/ASM binaries in /apps/sys.\n\0";
 const README: &[u8] = b"Sovereign Root Workspace\n- apps/sys/  : Standalone executable capability binaries (C/ASM)\n- apps/pkg/  : User and installed capability packages\n- meta/      : System capability ledger and configuration\n- vaults/    : User data vaults (VaultFS)\n- edps/      : Device capability endpoints (console, drives/ata0)\n- srvs/      : Ring 3 system server IPC channels\n\0";
-const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\nproc.bin        console:all,storage:read\nworker.bin      console:write\n\0";
+const DEMO_SH: &[u8] = b"#!/bin/sh\n# Sovereign Shell Demonstration\nMSG=\"AxiomOS On-Device Shell Engine\"\necho $MSG\necho \"Active shell: $SHELL\"\necho \"Files in current directory:\"\nls /vaults/root\necho \"Script completed successfully.\"\n\0";
+const MATH_C: &[u8] = b"int fib(int n) {\n    if (n <= 1) return n;\n    return fib(n - 1) + fib(n - 2);\n}\n\nint main() {\n    int f;\n    char* mem;\n    printf(\"=== Sovereign On-Device C Compiler (crun) ===\\n\");\n    f = fib(7);\n    printf(\"fib(7) = %d\\n\", f);\n    mem = malloc(32);\n    strcpy(mem, \"Heap Allocation OK\");\n    printf(\"Dynamic Allocation Test: %s\\n\", mem);\n    free(mem);\n    printf(\"C execution verified!\\n\");\n    return 0;\n}\n\0";
+const CAPS_LEDGER: &[u8] = b"# AxiomOS Capability Ledger v1.0\necho.bin        console:write,storage:write\nls.bin          console:write,storage:read\ncat.bin         console:write,storage:read\nwhoami.bin      console:write\naxe.bin         console:all,storage:all\nproc.bin        console:all,storage:read\nworker.bin      console:write\nsh.bin          console:all,storage:all\ncrun.bin        console:all,storage:all\n\0";
 
 impl CapGraph {
     pub const fn new() -> Self {
@@ -295,6 +299,8 @@ impl CapGraph {
         self.add_static_blob(apps_sys_id, "grep.bin", GREP_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(apps_sys_id, "crash.bin", CRASH_BIN, RIGHTS_EXEC | RIGHTS_READ);
         self.add_static_blob(apps_sys_id, "heaptest.bin", HEAPTEST_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "sh.bin", SH_BIN, RIGHTS_EXEC | RIGHTS_READ);
+        self.add_static_blob(apps_sys_id, "crun.bin", CRUN_BIN, RIGHTS_EXEC | RIGHTS_READ);
 
         // Add config files to meta/ Map
         self.add_static_blob(meta_id, "caps.ledger", CAPS_LEDGER, RIGHTS_READ);
@@ -303,6 +309,8 @@ impl CapGraph {
 
         // Add vaults/root data files
         self.add_static_blob(root_vault_id, "readme.txt", README, RIGHTS_ALL);
+        self.add_static_blob(root_vault_id, "demo.sh", DEMO_SH, RIGHTS_ALL);
+        self.add_static_blob(root_vault_id, "math.c", MATH_C, RIGHTS_ALL);
 
         // Add capability endpoints
         self.add_endpoint(edps_id, "console", 5, RIGHTS_WRITE | RIGHTS_READ);
@@ -958,6 +966,8 @@ impl CapGraph {
             "axe" | "axe.bin" => Some("console:all,storage:all"),
             "proc" | "proc.bin" => Some("console:all,storage:read"),
             "worker" | "worker.bin" => Some("console:write"),
+            "sh" | "sh.bin" => Some("console:all,storage:all"),
+            "crun" | "crun.bin" => Some("console:all,storage:all"),
             _ => None,
         }
     }

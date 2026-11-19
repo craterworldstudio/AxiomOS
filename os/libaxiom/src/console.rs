@@ -68,55 +68,273 @@ impl core::fmt::Write for ConsoleWriter {
     }
 }
 
+pub const KEY_CTRL_C: u8    = 3;
+pub const KEY_BACKSPACE: u8 = 8;
+pub const KEY_TAB: u8       = 9;
+pub const KEY_ENTER: u8     = 10;
+pub const KEY_UP: u8        = 128;
+pub const KEY_DOWN: u8      = 129;
+pub const KEY_LEFT: u8      = 130;
+pub const KEY_RIGHT: u8     = 131;
+pub const KEY_DELETE: u8    = 132;
+pub const KEY_HOME: u8      = 133;
+pub const KEY_END: u8       = 134;
+
+pub struct HistoryRing {
+    pub entries: [[u8; 128]; 32],
+    pub lengths: [usize; 32],
+    pub count: usize,
+    pub head: usize,
+}
+
+impl HistoryRing {
+    pub const fn new() -> Self {
+        Self {
+            entries: [[0; 128]; 32],
+            lengths: [0; 32],
+            count: 0,
+            head: 0,
+        }
+    }
+
+    pub fn push(&mut self, cmd: &[u8]) {
+        if cmd.is_empty() { return; }
+        if self.count > 0 {
+            let prev_idx = (self.head + 31) % 32;
+            let prev_len = self.lengths[prev_idx];
+            if prev_len == cmd.len() && &self.entries[prev_idx][..prev_len] == cmd {
+                return;
+            }
+        }
+        let clen = core::cmp::min(cmd.len(), 127);
+        self.entries[self.head][..clen].copy_from_slice(&cmd[..clen]);
+        self.lengths[self.head] = clen;
+        self.head = (self.head + 1) % 32;
+        if self.count < 32 {
+            self.count += 1;
+        }
+    }
+
+    pub fn get(&self, offset_from_newest: usize) -> Option<&[u8]> {
+        if offset_from_newest >= self.count {
+            return None;
+        }
+        let idx = (self.head + 32 - 1 - offset_from_newest) % 32;
+        let len = self.lengths[idx];
+        Some(&self.entries[idx][..len])
+    }
+}
+
+pub static mut DEFAULT_HISTORY: HistoryRing = HistoryRing::new();
+
 pub struct ConsoleReader;
 
 impl ConsoleReader {
-    /// Non-blocking query of a pending keystroke from the console capability.
-    pub fn get_char() -> Option<char> {
+    /// Non-blocking query of a pending raw keystroke byte from the console capability.
+    pub fn get_raw_key() -> Option<u8> {
         let ep = EndpointCap::from_handle(CapHandle::new(ROOT_SLOT_CONSOLE as u32, 1));
         unsafe {
             let res = invoke_short(ep.0.0, OP_CONSOLE_GETCHAR, 0, 0);
-            if res != 0 && res < 128 {
-                Some(res as u8 as char)
+            if res != 0 {
+                Some(res as u8)
             } else {
                 None
             }
         }
     }
 
-    /// Reads a complete line of text from the console into `buf`.
-    /// Echoes characters visually to the console, handles Backspace rubout,
-    /// and returns the number of bytes read when Enter is pressed.
-    pub fn read_line(buf: &mut [u8]) -> usize {
+    /// Non-blocking query of a pending keystroke as char.
+    pub fn get_char() -> Option<char> {
+        Self::get_raw_key().map(|b| b as char)
+    }
+
+    /// Reads a line with command history, navigation arrows, cursor positioning, and Ctrl+C.
+    /// Returns Some(len) on Enter, or None if cancelled via Ctrl+C.
+    pub fn read_line_with_history(buf: &mut [u8], history: &mut HistoryRing) -> Option<usize> {
         let mut len = 0;
+        let mut cursor = 0;
         let max_len = buf.len();
 
+        let mut history_idx: Option<usize> = None;
+        let mut saved_line = [0u8; 128];
+        let mut saved_len = 0;
+
         loop {
-            if let Some(ch) = Self::get_char() {
-                if ch == '\n' {
-                    ConsoleWriter::write_str("\n");
-                    break;
-                } else if ch == '\x08' { // Backspace
-                    if len > 0 {
-                        len -= 1;
-                        ConsoleWriter::write_str("\x08");
-                    }
-                } else if (ch as u8) >= 32 && (ch as u8) <= 126 { // Printable ASCII
-                    if len + 1 < max_len {
-                        buf[len] = ch as u8;
-                        len += 1;
-                        let s = [ch as u8];
-                        if let Ok(slice_str) = core::str::from_utf8(&s) {
-                            ConsoleWriter::write_str(slice_str);
+            if let Some(key) = Self::get_raw_key() {
+                match key {
+                    KEY_CTRL_C => {
+                        ConsoleWriter::set_color(0x00E05555, 0x00101418); // Crimson ^C
+                        ConsoleWriter::write_str("^C\n");
+                        ConsoleWriter::set_color(0x00D8DEE9, 0x00101418);
+                        return None;
+                    },
+                    KEY_ENTER | b'\r' => {
+                        ConsoleWriter::write_str("\n");
+                        if len > 0 {
+                            history.push(&buf[..len]);
                         }
-                    }
+                        return Some(len);
+                    },
+                    KEY_BACKSPACE => {
+                        if cursor > 0 {
+                            if cursor == len {
+                                len -= 1;
+                                cursor -= 1;
+                                ConsoleWriter::write_str("\x08");
+                            } else {
+                                for i in (cursor - 1)..(len - 1) {
+                                    buf[i] = buf[i + 1];
+                                }
+                                len -= 1;
+                                cursor -= 1;
+                                ConsoleWriter::write_str("\x11");
+                                let slice = unsafe { core::str::from_utf8_unchecked(&buf[cursor..len]) };
+                                ConsoleWriter::write_str(slice);
+                                ConsoleWriter::write_str(" ");
+                                for _ in 0..(len - cursor + 1) {
+                                    ConsoleWriter::write_str("\x11");
+                                }
+                            }
+                        }
+                    },
+                    KEY_DELETE => {
+                        if cursor < len {
+                            for i in cursor..(len - 1) {
+                                buf[i] = buf[i + 1];
+                            }
+                            len -= 1;
+                            let slice = unsafe { core::str::from_utf8_unchecked(&buf[cursor..len]) };
+                            ConsoleWriter::write_str(slice);
+                            ConsoleWriter::write_str(" ");
+                            for _ in 0..(len - cursor + 1) {
+                                ConsoleWriter::write_str("\x11");
+                            }
+                        }
+                    },
+                    KEY_LEFT => {
+                        if cursor > 0 {
+                            cursor -= 1;
+                            ConsoleWriter::write_str("\x11");
+                        }
+                    },
+                    KEY_RIGHT => {
+                        if cursor < len {
+                            cursor += 1;
+                            ConsoleWriter::write_str("\x12");
+                        }
+                    },
+                    KEY_HOME => {
+                        while cursor > 0 {
+                            cursor -= 1;
+                            ConsoleWriter::write_str("\x11");
+                        }
+                    },
+                    KEY_END => {
+                        while cursor < len {
+                            cursor += 1;
+                            ConsoleWriter::write_str("\x12");
+                        }
+                    },
+                    KEY_UP => {
+                        if history.count > 0 {
+                            let next_idx = match history_idx {
+                                None => {
+                                    let clen = core::cmp::min(len, 127);
+                                    saved_line[..clen].copy_from_slice(&buf[..clen]);
+                                    saved_len = clen;
+                                    0
+                                },
+                                Some(curr) => {
+                                    if curr + 1 < history.count { curr + 1 } else { curr }
+                                }
+                            };
+                            history_idx = Some(next_idx);
+                            if let Some(hist_data) = history.get(next_idx) {
+                                while cursor < len {
+                                    ConsoleWriter::write_str("\x12");
+                                    cursor += 1;
+                                }
+                                for _ in 0..len {
+                                    ConsoleWriter::write_str("\x08");
+                                }
+                                let clen = core::cmp::min(hist_data.len(), max_len - 1);
+                                buf[..clen].copy_from_slice(&hist_data[..clen]);
+                                len = clen;
+                                cursor = clen;
+                                let slice = unsafe { core::str::from_utf8_unchecked(&buf[..len]) };
+                                ConsoleWriter::write_str(slice);
+                            }
+                        }
+                    },
+                    KEY_DOWN => {
+                        if let Some(curr) = history_idx {
+                            while cursor < len {
+                                ConsoleWriter::write_str("\x12");
+                                cursor += 1;
+                            }
+                            for _ in 0..len {
+                                ConsoleWriter::write_str("\x08");
+                            }
+
+                            if curr > 0 {
+                                let next_idx = curr - 1;
+                                history_idx = Some(next_idx);
+                                if let Some(hist_data) = history.get(next_idx) {
+                                    let clen = core::cmp::min(hist_data.len(), max_len - 1);
+                                    buf[..clen].copy_from_slice(&hist_data[..clen]);
+                                    len = clen;
+                                    cursor = clen;
+                                    let slice = unsafe { core::str::from_utf8_unchecked(&buf[..len]) };
+                                    ConsoleWriter::write_str(slice);
+                                }
+                            } else {
+                                history_idx = None;
+                                let clen = core::cmp::min(saved_len, max_len - 1);
+                                buf[..clen].copy_from_slice(&saved_line[..clen]);
+                                len = clen;
+                                cursor = clen;
+                                if len > 0 {
+                                    let slice = unsafe { core::str::from_utf8_unchecked(&buf[..len]) };
+                                    ConsoleWriter::write_str(slice);
+                                }
+                            }
+                        }
+                    },
+                    32..=126 => {
+                        if len + 1 < max_len {
+                            if cursor == len {
+                                buf[len] = key;
+                                len += 1;
+                                cursor += 1;
+                                let s = [key];
+                                let slice = unsafe { core::str::from_utf8_unchecked(&s) };
+                                ConsoleWriter::write_str(slice);
+                            } else {
+                                for i in (cursor..len).rev() {
+                                    buf[i + 1] = buf[i];
+                                }
+                                buf[cursor] = key;
+                                len += 1;
+                                let slice = unsafe { core::str::from_utf8_unchecked(&buf[cursor..len]) };
+                                ConsoleWriter::write_str(slice);
+                                cursor += 1;
+                                for _ in 0..(len - cursor) {
+                                    ConsoleWriter::write_str("\x11");
+                                }
+                            }
+                        }
+                    },
+                    _ => {}
                 }
             } else {
                 unsafe { core::arch::asm!("pause"); }
             }
         }
+    }
 
-        len
+    /// Reads a complete line of text using the default command history.
+    pub fn read_line(buf: &mut [u8]) -> usize {
+        Self::read_line_with_history(buf, unsafe { &mut *core::ptr::addr_of_mut!(DEFAULT_HISTORY) }).unwrap_or(0)
     }
 }
 

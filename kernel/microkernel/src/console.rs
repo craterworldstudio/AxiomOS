@@ -118,6 +118,20 @@ impl Console {
             return;
         }
 
+        if c == 0x11 { // Non-destructive Cursor Left
+            if self.col > 0 {
+                self.col -= 1;
+            }
+            return;
+        }
+
+        if c == 0x12 { // Non-destructive Cursor Right
+            if self.col + 1 < self.max_cols {
+                self.col += 1;
+            }
+            return;
+        }
+
         if c == b'\n' {
             self.col = 0;
             self.row += 1;
