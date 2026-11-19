@@ -9,27 +9,26 @@ Partitions:
 
 import sys, struct, zlib, uuid
 
-def make_gpt_disk(output_path, total_sectors=32768): # 16 MB = 32768 sectors of 512 bytes
-    disk = bytearray(total_sectors * 512)
-    
+def make_gpt_disk(output_path, total_sectors=4194304): # 2 GB = 4,194,304 sectors of 512 bytes
+    # Partition Boundaries:
+    # Partition 1 (ata0p1 - System Substrate): LBA 2048 .. 10239 (8192 sectors = 4 MB)
+    # Partition 2 (ata0p2 - User Vaults Data): LBA 10240 .. total_sectors - 34 (4184030 sectors = ~2.04 GB)
+    p1_start = 2048
+    p1_end   = 10239
+    p2_start = 10240
+    p2_end   = total_sectors - 34
+
     # 1. Protective MBR (LBA 0)
-    disk[446:446+16] = struct.pack('<BBBBBBBBII', 
+    mbr = bytearray(512)
+    mbr[446:446+16] = struct.pack('<BBBBBBBBII', 
         0x00,              # Bootable (0x00 = non-bootable)
         0x00, 0x02, 0x00,  # Start CHS
         0xEE,              # OSType: GPT Protective MBR
         0xFF, 0xFF, 0xFF,  # End CHS
         1,                 # Starting LBA
-        total_sectors - 1  # Size in sectors
+        min(total_sectors - 1, 0xFFFFFFFF)  # Size in sectors
     )
-    disk[510:512] = b'\x55\xAA'
-
-    # Partition Boundaries:
-    # Partition 1 (ata0p1 - System Substrate): LBA 2048 .. 10239 (8192 sectors = 4 MB)
-    # Partition 2 (ata0p2 - User Vaults Data): LBA 10240 .. 32734 (22495 sectors = ~11 MB)
-    p1_start = 2048
-    p1_end   = 10239
-    p2_start = 10240
-    p2_end   = total_sectors - 34
+    mbr[510:512] = b'\x55\xAA'
 
     # 2. Partition Entries (LBA 2..33, 128 entries of 128 bytes each = 16384 bytes)
     part_entries = bytearray(128 * 128)
@@ -48,7 +47,7 @@ def make_gpt_disk(output_path, total_sectors=32768): # 16 MB = 32768 sectors of 
 
     entries_crc = zlib.crc32(part_entries) & 0xFFFFFFFF
 
-    # 3. Primary GPT Header (LBA 1, 92 bytes)
+    # 3. Primary GPT Header (LBA 1, 92 bytes inside 512 bytes)
     disk_guid = uuid.UUID('a8a8a8a8-b8b8-c8c8-d8d8-e8e8e8e8e8e8').bytes_le
     header = bytearray(struct.pack('<8sIIIIQQQQ16sQIII',
         b'EFI PART',       # 8s: Signature
@@ -68,9 +67,7 @@ def make_gpt_disk(output_path, total_sectors=32768): # 16 MB = 32768 sectors of 
     ))
     header_crc = zlib.crc32(header[:92]) & 0xFFFFFFFF
     struct.pack_into('<I', header, 16, header_crc)
-
-    disk[512:512+92] = header[:92]
-    disk[1024:1024+len(part_entries)] = part_entries
+    header_sector = header.ljust(512, b'\x00')
 
     # 4. Backup GPT Header and Entries at end of disk
     backup_header = bytearray(header)
@@ -80,13 +77,24 @@ def make_gpt_disk(output_path, total_sectors=32768): # 16 MB = 32768 sectors of 
     struct.pack_into('<I', backup_header, 16, 0)
     backup_crc = zlib.crc32(backup_header[:92]) & 0xFFFFFFFF
     struct.pack_into('<I', backup_header, 16, backup_crc)
+    backup_header_sector = backup_header.ljust(512, b'\x00')
 
-    disk[(total_sectors - 33)*512 : (total_sectors - 1)*512] = part_entries
-    disk[(total_sectors - 1)*512 : (total_sectors - 1)*512 + 92] = backup_header[:92]
-
+    # Write sparse raw image
     with open(output_path, 'wb') as f:
-        f.write(disk)
-    print(f"[GPT] Successfully forged sovereign partitioned disk: {output_path} ({total_sectors * 512 // 1024 // 1024} MB)")
+        # LBA 0
+        f.write(mbr)
+        # LBA 1
+        f.write(header_sector)
+        # LBA 2..33
+        f.write(part_entries)
+        # Seek to LBA (total_sectors - 33) for backup partition entries
+        f.seek((total_sectors - 33) * 512)
+        f.write(part_entries)
+        # LBA (total_sectors - 1) for backup header
+        f.write(backup_header_sector)
+
+    mb_size = (total_sectors * 512) // (1024 * 1024)
+    print(f"[GPT] Successfully forged sovereign partitioned sparse disk: {output_path} ({mb_size} MB / {mb_size // 1024} GB)")
 
 if __name__ == '__main__':
     out_file = sys.argv[1] if len(sys.argv) > 1 else 'target/axiom_data.img'

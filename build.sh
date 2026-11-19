@@ -100,7 +100,7 @@ if [ "$BIOS_MODE" -eq 0 ]; then
 
     DATA_IMG="target/axiom_data.img"
     if [ ! -f "$DATA_IMG" ]; then
-        echo "[BUILD] Forging 16MB Sovereign Partitioned Data Disk (GPT: ata0p1, ata0p2)..."
+        echo "[BUILD] Forging 2GB Sovereign Partitioned Data Disk (GPT: ata0p1, ata0p2)..."
         python3 tools/make_gpt_disk.py "$DATA_IMG"
     fi
 

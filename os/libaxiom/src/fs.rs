@@ -306,7 +306,15 @@ impl CapGraph {
 
         // Add capability endpoints
         self.add_endpoint(edps_id, "console", 5, RIGHTS_WRITE | RIGHTS_READ);
-        self.add_endpoint(edps_drives_id, "ata0", 7, RIGHTS_WRITE | RIGHTS_READ);
+        let ata0_node_id = self.add_endpoint(edps_drives_id, "ata0", 7, RIGHTS_WRITE | RIGHTS_READ);
+        if ata0_node_id > 0 {
+            let ep = &mut self.nodes[ata0_node_id];
+            let desc = b"[CAPABILITY ENDPOINT: Primary ATA Block Device (ata0)]\nSectors: 4194304 (~2.0 GB)\nSector Size: 512 bytes\nPartitions: ata0p1 (Substrate 4 MB), ata0p2 (VaultStore ~2.04 GB)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\n";
+            ep.dynamic_buf[..desc.len()].copy_from_slice(desc);
+            ep.data_ptr = ep.dynamic_buf.as_ptr();
+            ep.data_len = desc.len();
+            ep.is_dynamic = true;
+        }
 
         self.initialized = true;
 
@@ -345,17 +353,74 @@ impl CapGraph {
                             name_buf[nlen] = ch;
                             nlen += 1;
                         }
-                        if nlen > 0 {
+
+                        let mut start_lba = 0u64;
+                        let mut end_lba = 0u64;
+                        for b in 0..8 {
+                            start_lba |= (entries_buf[offset + 32 + b] as u64) << (b * 8);
+                            end_lba |= (entries_buf[offset + 40 + b] as u64) << (b * 8);
+                        }
+                        let sec_count = if end_lba >= start_lba { end_lba - start_lba + 1 } else { 0 };
+                        let mb_size = (sec_count * 512) / (1024 * 1024);
+
+                        let rights = if p_idx == 0 { RIGHTS_READ } else { RIGHTS_WRITE | RIGHTS_READ };
+                        let node_id = if nlen > 0 {
                             if let Ok(pname) = core::str::from_utf8(&name_buf[..nlen]) {
-                                self.add_endpoint(drives_map_id, pname, 7, RIGHTS_WRITE | RIGHTS_READ);
-                            }
+                                self.add_endpoint(drives_map_id, pname, 7, rights)
+                            } else { 0 }
                         } else {
                             match p_idx {
-                                0 => { self.add_endpoint(drives_map_id, "ata0p1", 7, RIGHTS_READ); },
-                                1 => { self.add_endpoint(drives_map_id, "ata0p2", 7, RIGHTS_WRITE | RIGHTS_READ); },
-                                2 => { self.add_endpoint(drives_map_id, "ata0p3", 7, RIGHTS_WRITE | RIGHTS_READ); },
-                                _ => { self.add_endpoint(drives_map_id, "ata0p4", 7, RIGHTS_WRITE | RIGHTS_READ); },
+                                0 => self.add_endpoint(drives_map_id, "ata0p1", 7, RIGHTS_READ),
+                                1 => self.add_endpoint(drives_map_id, "ata0p2", 7, RIGHTS_WRITE | RIGHTS_READ),
+                                2 => self.add_endpoint(drives_map_id, "ata0p3", 7, RIGHTS_WRITE | RIGHTS_READ),
+                                _ => self.add_endpoint(drives_map_id, "ata0p4", 7, RIGHTS_WRITE | RIGHTS_READ),
                             }
+                        };
+
+                        if node_id > 0 {
+                            let ep_node = &mut self.nodes[node_id];
+                            let mut d_pos = 0;
+                            let pfx = b"[CAPABILITY ENDPOINT: Sovereign GPT Partition Slice (";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx.len()].copy_from_slice(pfx); d_pos += pfx.len();
+                            let actual_nlen = core::cmp::min(nlen, 16);
+                            if actual_nlen > 0 {
+                                ep_node.dynamic_buf[d_pos..d_pos + actual_nlen].copy_from_slice(&name_buf[..actual_nlen]);
+                                d_pos += actual_nlen;
+                            } else {
+                                let def_name: &[u8] = match p_idx { 0 => b"ata0p1", 1 => b"ata0p2", 2 => b"ata0p3", _ => b"ata0p4" };
+                                ep_node.dynamic_buf[d_pos..d_pos + def_name.len()].copy_from_slice(def_name);
+                                d_pos += def_name.len();
+                            }
+                            let pfx2 = b")]\nType: GPT | Range: LBA ";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx2.len()].copy_from_slice(pfx2); d_pos += pfx2.len();
+                            d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], start_lba as u32);
+                            let pfx3 = b"..";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx3.len()].copy_from_slice(pfx3); d_pos += pfx3.len();
+                            d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], end_lba as u32);
+                            let pfx4 = b" | Sectors: ";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx4.len()].copy_from_slice(pfx4); d_pos += pfx4.len();
+                            d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], sec_count as u32);
+                            let pfx5 = b" (~";
+                            ep_node.dynamic_buf[d_pos..d_pos + pfx5.len()].copy_from_slice(pfx5); d_pos += pfx5.len();
+                            if mb_size >= 1024 {
+                                d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], (mb_size / 1024) as u32);
+                                let dot = b".";
+                                ep_node.dynamic_buf[d_pos..d_pos + dot.len()].copy_from_slice(dot); d_pos += dot.len();
+                                let dec_part = ((mb_size % 1024) * 100) / 1024;
+                                if dec_part < 10 {
+                                    ep_node.dynamic_buf[d_pos] = b'0'; d_pos += 1;
+                                }
+                                d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], dec_part as u32);
+                                let pfx_gb = b" GB)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nPhysical Source: Attached ATA Storage Device\n";
+                                ep_node.dynamic_buf[d_pos..d_pos + pfx_gb.len()].copy_from_slice(pfx_gb); d_pos += pfx_gb.len();
+                            } else {
+                                d_pos += Self::write_u32_dec(&mut ep_node.dynamic_buf[d_pos..], mb_size as u32);
+                                let pfx_mb = b" MB)\nOperations: OP_STORAGE_READ(20), OP_STORAGE_WRITE(21)\nPhysical Source: Attached ATA Storage Device\n";
+                                ep_node.dynamic_buf[d_pos..d_pos + pfx_mb.len()].copy_from_slice(pfx_mb); d_pos += pfx_mb.len();
+                            }
+                            ep_node.data_ptr = ep_node.dynamic_buf.as_ptr();
+                            ep_node.data_len = d_pos;
+                            ep_node.is_dynamic = true;
                         }
                     }
                 }
@@ -561,7 +626,7 @@ impl CapGraph {
             entry_count: 0,
             bitmap_lba: PARTITION_DATA_START_LBA + 1,
             data_start_lba: PARTITION_DATA_START_LBA + 8,
-            total_sectors: 22495,
+            total_sectors: 4184030,
             entries: [CapObjectEntry::default(); 4],
             _reserved: [0; 16],
         };
